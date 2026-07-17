@@ -393,8 +393,16 @@ app.get('/robots.txt', (_req, res) => {
   );
 });
 
-app.get('/sitemap.xml', (_req, res) => {
-  res.type('application/xml').send(
+// ── Sitemaps ──────────────────────────────────────────────────────────────────
+// Generated XML is cached in-memory so crawlers never wait on catalog
+// generation (the intent catalog can take 60–90s to build on a cold process,
+// which made Googlebot time out → GSC "Couldn't fetch / General HTTP error").
+
+const SITEMAP_TTL_MS = 6 * 60 * 60 * 1000;
+const sitemapCache = new Map<string, { xml: string; at: number }>();
+
+const SITEMAP_BUILDERS: Record<string, () => string> = {
+  'sitemap.xml': () =>
     xmlSitemapIndex([
       `${SITE_URL}/sitemap-static.xml`,
       `${SITE_URL}/sitemap-countries.xml`,
@@ -403,41 +411,55 @@ app.get('/sitemap.xml', (_req, res) => {
       `${SITE_URL}/sitemap-intent-landings.xml`,
       `${SITE_URL}/sitemap-intent-categories.xml`,
       `${SITE_URL}/sitemap-intent-country-guides.xml`,
-    ])
-  );
-});
+    ]),
+  'sitemap-static.xml': () => xmlUrlset(buildSitemapUrlEntries().home),
+  'sitemap-countries.xml': () => xmlUrlset(buildSitemapUrlEntries().countries),
+  'sitemap-cities.xml': () => xmlUrlset(buildSitemapUrlEntries().cities),
+  'sitemap-comparisons.xml': () => xmlUrlset(buildSitemapUrlEntries().comparisons),
+  'sitemap-intent-landings.xml': () => xmlUrlset(listIndexableCityLandingUrls(SITE_URL)),
+  'sitemap-intent-categories.xml': () => xmlUrlset(listIndexableCategoryUrls(SITE_URL)),
+  'sitemap-intent-country-guides.xml': () => xmlUrlset(listIndexableCountryGuideUrls(SITE_URL)),
+};
 
-app.get('/sitemap-static.xml', (_req, res) => {
-  const entries = buildSitemapUrlEntries();
-  res.type('application/xml').send(xmlUrlset(entries.home));
-});
+function getSitemapXml(key: string): string {
+  const hit = sitemapCache.get(key);
+  if (hit && Date.now() - hit.at < SITEMAP_TTL_MS) return hit.xml;
+  const xml = SITEMAP_BUILDERS[key]();
+  sitemapCache.set(key, { xml, at: Date.now() });
+  return xml;
+}
 
-app.get('/sitemap-countries.xml', (_req, res) => {
-  const entries = buildSitemapUrlEntries();
-  res.type('application/xml').send(xmlUrlset(entries.countries));
-});
+function warmSitemaps(): void {
+  for (const key of Object.keys(SITEMAP_BUILDERS)) {
+    try {
+      getSitemapXml(key);
+    } catch (err) {
+      console.warn(`Sitemap warm failed (${key}):`, err);
+    }
+  }
+}
 
-app.get('/sitemap-cities.xml', (_req, res) => {
-  const entries = buildSitemapUrlEntries();
-  res.type('application/xml').send(xmlUrlset(entries.cities));
-});
-
-app.get('/sitemap-comparisons.xml', (_req, res) => {
-  const entries = buildSitemapUrlEntries();
-  res.type('application/xml').send(xmlUrlset(entries.comparisons));
-});
-
-app.get('/sitemap-intent-landings.xml', (_req, res) => {
-  res.type('application/xml').send(xmlUrlset(listIndexableCityLandingUrls(SITE_URL)));
-});
-
-app.get('/sitemap-intent-categories.xml', (_req, res) => {
-  res.type('application/xml').send(xmlUrlset(listIndexableCategoryUrls(SITE_URL)));
-});
-
-app.get('/sitemap-intent-country-guides.xml', (_req, res) => {
-  res.type('application/xml').send(xmlUrlset(listIndexableCountryGuideUrls(SITE_URL)));
-});
+for (const key of Object.keys(SITEMAP_BUILDERS)) {
+  app.get(`/${key}`, (_req, res) => {
+    try {
+      const xml = getSitemapXml(key);
+      res
+        .status(200)
+        .set({
+          'Content-Type': 'application/xml; charset=UTF-8',
+          'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
+        })
+        .send(xml);
+    } catch (err) {
+      // Never fall through to the HTML catch-all on failure.
+      console.error(`[sitemap:${key}]`, err);
+      res
+        .status(503)
+        .set({ 'Content-Type': 'text/plain; charset=UTF-8', 'Retry-After': '120' })
+        .send('Sitemap temporarily unavailable');
+    }
+  });
+}
 
 async function start() {
   await testConnection();
@@ -499,6 +521,13 @@ async function start() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 CityCost server listening at http://localhost:${PORT} [ENV: ${process.env.NODE_ENV || 'development'}]`);
     console.log(`   Also reachable at http://127.0.0.1:${PORT}`);
+    // Pre-generate all sitemap XML in the background so the first crawler
+    // request is served from cache instead of waiting on catalog generation.
+    setTimeout(() => {
+      const t0 = Date.now();
+      warmSitemaps();
+      console.log(`🗺️  Sitemaps warmed in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    }, 500);
   });
 
   server.on('error', (err: NodeJS.ErrnoException) => {
