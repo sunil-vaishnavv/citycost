@@ -88,6 +88,22 @@ function metricsFor(rec: EligibleCity): CityMetricsForIntent {
   return m;
 }
 
+function scoreLandingForKind(
+  kind: CityLandingKind,
+  rec: EligibleCity
+): { slug: string; q: number } | null {
+  const m = metricsFor(rec);
+  const quality = scoreCityLanding(kind, m);
+  if (!quality.index_eligibility) return null;
+  const qualityBlend =
+    quality.seo_score * 0.35 +
+    quality.intent_match_score * 0.35 +
+    quality.content_score * 0.2 +
+    quality.authority_score * 0.1;
+  const priority = getOrScorePriority(kind, m);
+  return { slug: rec.pageSlug, q: compositeRankScore(qualityBlend, priority) };
+}
+
 function ensureEligibleLandings(): Map<CityLandingKind, string[]> {
   if (eligibleLandingsCache) return eligibleLandingsCache;
   const cap = maxLandingsPerKind();
@@ -97,16 +113,8 @@ function ensureEligibleLandings(): Map<CityLandingKind, string[]> {
   for (const kind of CITY_LANDING_KINDS) {
     const scored: Array<{ slug: string; q: number }> = [];
     for (const rec of cities) {
-      const m = metricsFor(rec);
-      const quality = scoreCityLanding(kind, m);
-      if (!quality.index_eligibility) continue;
-      const qualityBlend =
-        quality.seo_score * 0.35 +
-        quality.intent_match_score * 0.35 +
-        quality.content_score * 0.2 +
-        quality.authority_score * 0.1;
-      const priority = getOrScorePriority(kind, m);
-      scored.push({ slug: rec.pageSlug, q: compositeRankScore(qualityBlend, priority) });
+      const row = scoreLandingForKind(kind, rec);
+      if (row) scored.push(row);
     }
     scored.sort((a, b) => b.q - a.q);
     map.set(
@@ -116,6 +124,41 @@ function ensureEligibleLandings(): Map<CityLandingKind, string[]> {
   }
   eligibleLandingsCache = map;
   return map;
+}
+
+/**
+ * Build the intent eligibility cache without monopolizing the event loop.
+ * Required so other sitemap handlers (esp. comparisons) can answer Googlebot
+ * while this 60–90s catalog warm runs after process start.
+ */
+export async function warmIntentCatalogAsync(): Promise<void> {
+  if (eligibleLandingsCache) return;
+  const cap = maxLandingsPerKind();
+  const map = new Map<CityLandingKind, string[]>();
+  const cities = listIndexableCities();
+  let steps = 0;
+
+  for (const kind of CITY_LANDING_KINDS) {
+    const scored: Array<{ slug: string; q: number }> = [];
+    for (const rec of cities) {
+      const row = scoreLandingForKind(kind, rec);
+      if (row) scored.push(row);
+      steps += 1;
+      // Yield after every city so large sitemap responses can flush to Googlebot.
+      await new Promise<void>((r) => setImmediate(r));
+      if (eligibleLandingsCache) return;
+      if (steps % 25 === 0) {
+        await new Promise<void>((r) => setTimeout(r, 0));
+        if (eligibleLandingsCache) return;
+      }
+    }
+    scored.sort((a, b) => b.q - a.q);
+    map.set(
+      kind,
+      scored.slice(0, cap).map((s) => s.slug)
+    );
+  }
+  if (!eligibleLandingsCache) eligibleLandingsCache = map;
 }
 
 export function isCityLandingIndexable(kind: CityLandingKind, pageSlug: string): boolean {

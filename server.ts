@@ -8,6 +8,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import http from 'http';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 import type { ViteDevServer } from 'vite';
 import fs from 'fs';
@@ -56,6 +57,7 @@ import {
   listIndexableCategoryUrls,
   listIndexableCountryGuideUrls,
   getIntentIndexStats,
+  warmIntentCatalogAsync,
   SEARCH_INTENT_VERSION,
 } from './lib/search-intent/index.js';
 
@@ -397,9 +399,22 @@ app.get('/robots.txt', (_req, res) => {
 // Generated XML is cached in-memory so crawlers never wait on catalog
 // generation (the intent catalog can take 60–90s to build on a cold process,
 // which made Googlebot time out → GSC "Couldn't fetch / General HTTP error").
+//
+// Comparison sitemap specifics:
+// - Prewarmed before listen (8426 URLs / ~1.5MB — under Google's 50k / 50MB caps)
+// - Stale-while-revalidate so TTL refresh never blocks Googlebot
+// - Intent catalog warm yields so comparisons stay serveable mid-warm
 
 const SITEMAP_TTL_MS = 6 * 60 * 60 * 1000;
-const sitemapCache = new Map<string, { xml: string; at: number }>();
+type SitemapCacheEntry = { xml: string; gzip: Buffer; at: number };
+const sitemapCache = new Map<string, SitemapCacheEntry>();
+const sitemapRefreshing = new Set<string>();
+
+/** Heavy builders that must not monopolize the event loop during warm. */
+const SITEMAP_HEAVY_KEYS = new Set([
+  'sitemap-intent-landings.xml',
+  'sitemap-intent-country-guides.xml',
+]);
 
 const SITEMAP_BUILDERS: Record<string, () => string> = {
   'sitemap.xml': () =>
@@ -415,41 +430,121 @@ const SITEMAP_BUILDERS: Record<string, () => string> = {
   'sitemap-static.xml': () => xmlUrlset(buildSitemapUrlEntries().home),
   'sitemap-countries.xml': () => xmlUrlset(buildSitemapUrlEntries().countries),
   'sitemap-cities.xml': () => xmlUrlset(buildSitemapUrlEntries().cities),
-  'sitemap-comparisons.xml': () => xmlUrlset(buildSitemapUrlEntries().comparisons),
+  'sitemap-comparisons.xml': () => {
+    const urls = listIndexableComparisons().map((p) => `${SITE_URL}/compare/${p.slug}`);
+    return xmlUrlset(urls);
+  },
   'sitemap-intent-landings.xml': () => xmlUrlset(listIndexableCityLandingUrls(SITE_URL)),
   'sitemap-intent-categories.xml': () => xmlUrlset(listIndexableCategoryUrls(SITE_URL)),
   'sitemap-intent-country-guides.xml': () => xmlUrlset(listIndexableCountryGuideUrls(SITE_URL)),
 };
 
-function getSitemapXml(key: string): string {
-  const hit = sitemapCache.get(key);
-  if (hit && Date.now() - hit.at < SITEMAP_TTL_MS) return hit.xml;
+function buildAndCacheSitemap(key: string): SitemapCacheEntry {
   const xml = SITEMAP_BUILDERS[key]();
-  sitemapCache.set(key, { xml, at: Date.now() });
-  return xml;
+  // Pre-gzip so Googlebot can be served ~44KB without CPU-gzipping 1.5MB on-request
+  // while the intent catalog is still warming on the event loop.
+  const gzip = zlib.gzipSync(Buffer.from(xml, 'utf8'), { level: 6 });
+  const entry: SitemapCacheEntry = { xml, gzip, at: Date.now() };
+  sitemapCache.set(key, entry);
+  return entry;
 }
 
-function warmSitemaps(): void {
-  for (const key of Object.keys(SITEMAP_BUILDERS)) {
+function scheduleSitemapRefresh(key: string): void {
+  if (sitemapRefreshing.has(key)) return;
+  sitemapRefreshing.add(key);
+  setImmediate(() => {
+    void (async () => {
+      try {
+        if (key === 'sitemap-intent-landings.xml' || key === 'sitemap-intent-country-guides.xml') {
+          await warmIntentCatalogAsync();
+          await new Promise<void>((r) => setImmediate(r));
+        }
+        buildAndCacheSitemap(key);
+      } catch (err) {
+        console.warn(`Sitemap refresh failed (${key}):`, err);
+      } finally {
+        sitemapRefreshing.delete(key);
+      }
+    })();
+  });
+}
+
+function getSitemapEntry(key: string): SitemapCacheEntry {
+  const hit = sitemapCache.get(key);
+  const age = hit ? Date.now() - hit.at : Infinity;
+  if (hit && age < SITEMAP_TTL_MS) return hit;
+  // Stale-while-revalidate: never block crawlers on refresh when we have bytes.
+  if (hit) {
+    scheduleSitemapRefresh(key);
+    return hit;
+  }
+  return buildAndCacheSitemap(key);
+}
+
+function yieldEventLoop(): Promise<void> {
+  return new Promise((r) => setImmediate(r));
+}
+
+/**
+ * Prewarm comparison sitemap before accepting traffic.
+ * Generation is ~15ms once the comparison list is ready; keeping it out of the
+ * post-listen warm race is what stops GSC "Couldn't fetch" on this URL.
+ */
+function prewarmComparisonSitemap(): void {
+  const t0 = Date.now();
+  const entry = buildAndCacheSitemap('sitemap-comparisons.xml');
+  const urls = (entry.xml.match(/<loc>/g) || []).length;
+  console.log(
+    `🗺️  Comparison sitemap ready: ${urls.toLocaleString()} URLs · ${(entry.xml.length / 1024).toFixed(0)} KB (${(entry.gzip.length / 1024).toFixed(0)} KB gzip) · ${Date.now() - t0}ms`
+  );
+}
+
+async function warmSitemaps(): Promise<void> {
+  // Comparisons first (usually already cached from prewarmComparisonSitemap).
+  const keys = [
+    'sitemap-comparisons.xml',
+    ...Object.keys(SITEMAP_BUILDERS).filter((k) => k !== 'sitemap-comparisons.xml'),
+  ];
+
+  for (const key of keys) {
     try {
-      getSitemapXml(key);
+      if (SITEMAP_HEAVY_KEYS.has(key)) {
+        await warmIntentCatalogAsync();
+        await yieldEventLoop();
+      }
+      buildAndCacheSitemap(key);
     } catch (err) {
       console.warn(`Sitemap warm failed (${key}):`, err);
     }
+    // Let pending HTTP (Googlebot / health) run between sitemaps.
+    await yieldEventLoop();
   }
 }
 
+function acceptsGzip(req: express.Request): boolean {
+  const raw = req.headers['accept-encoding'];
+  if (!raw) return false;
+  const value = Array.isArray(raw) ? raw.join(',') : raw;
+  return /\bgzip\b/i.test(value);
+}
+
 for (const key of Object.keys(SITEMAP_BUILDERS)) {
-  app.get(`/${key}`, (_req, res) => {
+  app.get(`/${key}`, (req, res) => {
     try {
-      const xml = getSitemapXml(key);
-      res
-        .status(200)
-        .set({
-          'Content-Type': 'application/xml; charset=UTF-8',
-          'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
-        })
-        .send(xml);
+      const entry = getSitemapEntry(key);
+      res.status(200);
+      res.set({
+        'Content-Type': 'application/xml; charset=UTF-8',
+        'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
+        Vary: 'Accept-Encoding',
+      });
+      if (acceptsGzip(req)) {
+        // Serve precompressed body — skips compression middleware CPU on large XML.
+        res.set('Content-Encoding', 'gzip');
+        res.send(entry.gzip);
+      } else {
+        res.send(entry.xml);
+      }
     } catch (err) {
       // Never fall through to the HTML catch-all on failure.
       console.error(`[sitemap:${key}]`, err);
@@ -473,6 +568,12 @@ async function start() {
   console.log(
     `🔎 SEO index ready: ${eligible.length} cities · ${countries.length} countries · ${comps.length} comparisons`
   );
+  // Build comparison XML before listen so the first Googlebot hit is always a cache hit.
+  try {
+    prewarmComparisonSitemap();
+  } catch (err) {
+    console.warn('Comparison sitemap prewarm failed:', err);
+  }
   try {
     const q = warmSeoQualitySample(20, 15, 15);
     console.log(
@@ -521,12 +622,13 @@ async function start() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 CityCost server listening at http://localhost:${PORT} [ENV: ${process.env.NODE_ENV || 'development'}]`);
     console.log(`   Also reachable at http://127.0.0.1:${PORT}`);
-    // Pre-generate all sitemap XML in the background so the first crawler
-    // request is served from cache instead of waiting on catalog generation.
+    // Pre-generate remaining sitemap XML in the background. Yields between
+    // builders so comparison sitemap requests stay fast during intent warm.
     setTimeout(() => {
       const t0 = Date.now();
-      warmSitemaps();
-      console.log(`🗺️  Sitemaps warmed in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      void warmSitemaps().then(() => {
+        console.log(`🗺️  Sitemaps warmed in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      });
     }, 500);
   });
 

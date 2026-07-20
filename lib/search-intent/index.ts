@@ -42,6 +42,7 @@ export {
   getIntentIndexStats,
   peekKeywordPriorityInternal,
   resetIntentCaches,
+  warmIntentCatalogAsync,
 } from './catalog.js';
 
 export {
