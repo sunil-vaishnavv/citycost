@@ -431,7 +431,10 @@ const SITEMAP_BUILDERS: Record<string, () => string> = {
   'sitemap-countries.xml': () => xmlUrlset(buildSitemapUrlEntries().countries),
   'sitemap-cities.xml': () => xmlUrlset(buildSitemapUrlEntries().cities),
   'sitemap-comparisons.xml': () => {
-    const urls = listIndexableComparisons().map((p) => `${SITE_URL}/compare/${p.slug}`);
+    // Deduplicate — compareSlug collisions previously produced 600+ duplicate <loc>s.
+    const urls = [
+      ...new Set(listIndexableComparisons().map((p) => `${SITE_URL}/compare/${p.slug}`)),
+    ];
     return xmlUrlset(urls);
   },
   'sitemap-intent-landings.xml': () => xmlUrlset(listIndexableCityLandingUrls(SITE_URL)),
@@ -469,7 +472,7 @@ function scheduleSitemapRefresh(key: string): void {
   });
 }
 
-function getSitemapEntry(key: string): SitemapCacheEntry {
+function getSitemapEntry(key: string): SitemapCacheEntry | null {
   const hit = sitemapCache.get(key);
   const age = hit ? Date.now() - hit.at : Infinity;
   if (hit && age < SITEMAP_TTL_MS) return hit;
@@ -477,6 +480,13 @@ function getSitemapEntry(key: string): SitemapCacheEntry {
   if (hit) {
     scheduleSitemapRefresh(key);
     return hit;
+  }
+  // Cold miss on heavy catalogs MUST NOT run synchronously — that blocked the
+  // event loop for 30–90s and made Googlebot time out on sitemap-comparisons.xml
+  // (GSC: Couldn't fetch / General HTTP error) even when comparisons XML was cached.
+  if (SITEMAP_HEAVY_KEYS.has(key)) {
+    scheduleSitemapRefresh(key);
+    return null;
   }
   return buildAndCacheSitemap(key);
 }
@@ -532,6 +542,17 @@ for (const key of Object.keys(SITEMAP_BUILDERS)) {
   app.get(`/${key}`, (req, res) => {
     try {
       const entry = getSitemapEntry(key);
+      if (!entry) {
+        res
+          .status(503)
+          .set({
+            'Content-Type': 'text/plain; charset=UTF-8',
+            'Retry-After': '120',
+            'Cache-Control': 'no-store',
+          })
+          .send('Sitemap temporarily unavailable');
+        return;
+      }
       res.status(200);
       res.set({
         'Content-Type': 'application/xml; charset=UTF-8',
@@ -558,30 +579,6 @@ for (const key of Object.keys(SITEMAP_BUILDERS)) {
 
 async function start() {
   await testConnection();
-  const n = warmGeoCityIndex();
-  console.log(`🌍 Global city database indexed (${n.toLocaleString()} locations)`);
-
-  // Warm SEO eligibility catalog (config-capped; not full 148k)
-  const eligible = listEligibleCities();
-  const countries = listIndexableCountries();
-  const comps = listIndexableComparisons();
-  console.log(
-    `🔎 SEO index ready: ${eligible.length} cities · ${countries.length} countries · ${comps.length} comparisons`
-  );
-  // Build comparison XML before listen so the first Googlebot hit is always a cache hit.
-  try {
-    prewarmComparisonSitemap();
-  } catch (err) {
-    console.warn('Comparison sitemap prewarm failed:', err);
-  }
-  try {
-    const q = warmSeoQualitySample(20, 15, 15);
-    console.log(
-      `📊 SEO quality sample — SEO ${q.average_seo_score} · content ${q.average_content_score} · uniqueness ${q.average_uniqueness} (n=${q.samples})`
-    );
-  } catch (err) {
-    console.warn('SEO quality sample skipped:', err);
-  }
 
   const server = http.createServer(app);
 
@@ -619,17 +616,51 @@ async function start() {
     });
   }
 
+  // Listen BEFORE geo/SEO/sitemap warm. Blocking work before listen made Cloudflare
+  // and Googlebot wait with 0 bytes → GSC "Couldn't fetch / General HTTP error".
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 CityCost server listening at http://localhost:${PORT} [ENV: ${process.env.NODE_ENV || 'development'}]`);
     console.log(`   Also reachable at http://127.0.0.1:${PORT}`);
-    // Pre-generate remaining sitemap XML in the background. Yields between
-    // builders so comparison sitemap requests stay fast during intent warm.
-    setTimeout(() => {
-      const t0 = Date.now();
-      void warmSitemaps().then(() => {
+
+    void (async () => {
+      try {
+        await yieldEventLoop();
+        const n = warmGeoCityIndex();
+        console.log(`🌍 Global city database indexed (${n.toLocaleString()} locations)`);
+        await yieldEventLoop();
+
+        const eligible = listEligibleCities();
+        await yieldEventLoop();
+        const countries = listIndexableCountries();
+        const comps = listIndexableComparisons();
+        console.log(
+          `🔎 SEO index ready: ${eligible.length} cities · ${countries.length} countries · ${comps.length} comparisons`
+        );
+        await yieldEventLoop();
+
+        try {
+          prewarmComparisonSitemap();
+        } catch (err) {
+          console.warn('Comparison sitemap prewarm failed:', err);
+        }
+        await yieldEventLoop();
+
+        const t0 = Date.now();
+        await warmSitemaps();
         console.log(`🗺️  Sitemaps warmed in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-      });
-    }, 500);
+
+        try {
+          const q = warmSeoQualitySample(20, 15, 15);
+          console.log(
+            `📊 SEO quality sample — SEO ${q.average_seo_score} · content ${q.average_content_score} · uniqueness ${q.average_uniqueness} (n=${q.samples})`
+          );
+        } catch (err) {
+          console.warn('SEO quality sample skipped:', err);
+        }
+      } catch (err) {
+        console.error('Background SEO/sitemap warm failed:', err);
+      }
+    })();
   });
 
   server.on('error', (err: NodeJS.ErrnoException) => {

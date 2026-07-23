@@ -250,6 +250,7 @@ export function listEligibleComparisons(cities: EligibleCity[]): ComparisonCandi
   const minScore = SEO_INDEX_CONFIG.minComparisonScore;
   const candidates: ComparisonCandidate[] = [];
   const seen = new Set<string>();
+  const seenSlugs = new Set<string>();
 
   const push = (a: EligibleCity, b: EligibleCity) => {
     if (a.pageSlug === b.pageSlug) return;
@@ -257,8 +258,9 @@ export function listEligibleComparisons(cities: EligibleCity[]): ComparisonCandi
     if (score < minScore) return;
     const { slug } = pairSlug(a, b);
     const key = [a.pageSlug, b.pageSlug].sort().join('|');
-    if (seen.has(key)) return;
+    if (seen.has(key) || seenSlugs.has(slug)) return;
     seen.add(key);
+    seenSlugs.add(slug);
     candidates.push({
       slug,
       cityA: a.city,
@@ -319,7 +321,14 @@ export function listEligibleComparisons(cities: EligibleCity[]): ComparisonCandi
     }
   }
 
-  return candidates
+  // Prefer higher score if any slug collision slipped through.
+  const bySlug = new Map<string, ComparisonCandidate>();
+  for (const c of candidates) {
+    const prev = bySlug.get(c.slug);
+    if (!prev || c.score > prev.score) bySlug.set(c.slug, c);
+  }
+
+  return [...bySlug.values()]
     .sort((a, b) => b.score - a.score || a.slug.localeCompare(b.slug))
     .slice(0, max);
 }
