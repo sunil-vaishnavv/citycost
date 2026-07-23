@@ -9,6 +9,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import http from 'http';
 import zlib from 'zlib';
+import crypto from 'crypto';
+import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import type { ViteDevServer } from 'vite';
 import fs from 'fs';
@@ -73,7 +75,16 @@ const isDev = process.env.NODE_ENV !== 'production';
 /** Required behind Render / Cloudflare / reverse proxies for correct rate-limit IPs. */
 app.set('trust proxy', 1);
 
-app.use(compression());
+app.use(
+  compression({
+    // Sitemap routes serve pre-gzipped or streamed bodies; don't let this
+    // middleware buffer XML before the first byte leaves the socket.
+    filter: (req, res) => {
+      if (typeof req.path === 'string' && /^\/sitemap.*\.xml$/i.test(req.path)) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 
 if (process.env.NODE_ENV === 'production') {
   app.use(helmet({
@@ -406,7 +417,7 @@ app.get('/robots.txt', (_req, res) => {
 // - Intent catalog warm yields so comparisons stay serveable mid-warm
 
 const SITEMAP_TTL_MS = 6 * 60 * 60 * 1000;
-type SitemapCacheEntry = { xml: string; gzip: Buffer; at: number };
+type SitemapCacheEntry = { xml: string; gzip: Buffer; at: number; etag: string };
 const sitemapCache = new Map<string, SitemapCacheEntry>();
 const sitemapRefreshing = new Set<string>();
 
@@ -447,7 +458,8 @@ function buildAndCacheSitemap(key: string): SitemapCacheEntry {
   // Pre-gzip so Googlebot can be served ~44KB without CPU-gzipping 1.5MB on-request
   // while the intent catalog is still warming on the event loop.
   const gzip = zlib.gzipSync(Buffer.from(xml, 'utf8'), { level: 6 });
-  const entry: SitemapCacheEntry = { xml, gzip, at: Date.now() };
+  const etag = `W/"${gzip.length.toString(16)}-${crypto.createHash('sha1').update(gzip).digest('hex').slice(0, 12)}"`;
+  const entry: SitemapCacheEntry = { xml, gzip, at: Date.now(), etag };
   sitemapCache.set(key, entry);
   return entry;
 }
@@ -538,7 +550,182 @@ function acceptsGzip(req: express.Request): boolean {
   return /\bgzip\b/i.test(value);
 }
 
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function* bufferChunks(buf: Buffer, size: number): Generator<Buffer> {
+  for (let i = 0; i < buf.length; i += size) {
+    yield buf.subarray(i, Math.min(i + size, buf.length));
+  }
+}
+
+/** Peek cache only — never sync-build (used by streaming comparisons handler). */
+function peekSitemapEntry(key: string): SitemapCacheEntry | null {
+  const hit = sitemapCache.get(key);
+  if (!hit) return null;
+  const age = Date.now() - hit.at;
+  if (age >= SITEMAP_TTL_MS) scheduleSitemapRefresh(key);
+  return hit;
+}
+
+/**
+ * Stream a cached sitemap so headers + first bytes leave before the full body
+ * is drained (chunked transfer). Avoids res.send() holding the complete payload.
+ */
+function streamCachedSitemap(req: express.Request, res: express.Response, entry: SitemapCacheEntry): void {
+  const gzip = acceptsGzip(req);
+  res.status(200);
+  res.set({
+    'Content-Type': 'application/xml; charset=UTF-8',
+    'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
+    Vary: 'Accept-Encoding',
+    ETag: entry.etag,
+  });
+  if (gzip) res.set('Content-Encoding', 'gzip');
+  // No Content-Length → chunked encoding; flush headers before body.
+  res.flushHeaders();
+
+  const body = gzip ? entry.gzip : Buffer.from(entry.xml, 'utf8');
+  Readable.from(bufferChunks(body, 16 * 1024)).pipe(res);
+}
+
+/**
+ * Cold path: write XML (and optional gzip) in chunks so Googlebot's TTFB is the
+ * first <?xml / gzip frame, not the full 1.5MB generation.
+ */
+function streamGenerateComparisons(req: express.Request, res: express.Response): void {
+  const urls = [
+    ...new Set(listIndexableComparisons().map((p) => `${SITE_URL}/compare/${p.slug}`)),
+  ];
+  const lastmod = new Date().toISOString().slice(0, 10);
+  const wantGzip = acceptsGzip(req);
+
+  res.status(200);
+  res.set({
+    'Content-Type': 'application/xml; charset=UTF-8',
+    'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
+    Vary: 'Accept-Encoding',
+  });
+  if (wantGzip) res.set('Content-Encoding', 'gzip');
+  res.flushHeaders();
+
+  const xmlParts: string[] = [];
+  const gzipChunks: Buffer[] = [];
+  const gzip = wantGzip ? zlib.createGzip({ level: 6 }) : null;
+
+  const sink: NodeJS.WritableStream = gzip ?? res;
+  if (gzip) {
+    gzip.on('data', (c: Buffer) => {
+      gzipChunks.push(c);
+      if (!res.write(c)) gzip.pause();
+    });
+    res.on('drain', () => gzip.resume());
+    gzip.on('end', () => {
+      const xml = xmlParts.join('');
+      const gzipBuf = Buffer.concat(gzipChunks);
+      const etag = `W/"${gzipBuf.length.toString(16)}-${crypto.createHash('sha1').update(gzipBuf).digest('hex').slice(0, 12)}"`;
+      sitemapCache.set('sitemap-comparisons.xml', {
+        xml,
+        gzip: gzipBuf,
+        at: Date.now(),
+        etag,
+      });
+      res.end();
+    });
+    gzip.on('error', (err) => {
+      console.error('[sitemap:sitemap-comparisons.xml] gzip', err);
+      if (!res.headersSent) {
+        res.status(503).set({ 'Retry-After': '120' }).end('Sitemap temporarily unavailable');
+      } else {
+        res.destroy(err);
+      }
+    });
+  }
+
+  const header = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`;
+  xmlParts.push(header);
+  sink.write(header);
+
+  const BATCH = 200;
+  let i = 0;
+
+  const writeBatch = () => {
+    try {
+      while (i < urls.length) {
+        let chunk = '';
+        const end = Math.min(i + BATCH, urls.length);
+        for (; i < end; i++) {
+          const loc = escapeXml(urls[i]);
+          chunk += `  <url>\n    <loc>${loc}</loc>\n    <lastmod>${lastmod}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
+        }
+        xmlParts.push(chunk);
+        if (!sink.write(chunk)) {
+          sink.once('drain', writeBatch);
+          return;
+        }
+        // Yield so other requests (and socket flush) can run mid-stream.
+        if (i < urls.length) {
+          setImmediate(writeBatch);
+          return;
+        }
+      }
+      const footer = `</urlset>`;
+      xmlParts.push(footer);
+      if (gzip) {
+        gzip.end(footer);
+      } else {
+        const xml = xmlParts.join('');
+        const gz = zlib.gzipSync(Buffer.from(xml, 'utf8'), { level: 6 });
+        const etag = `W/"${gz.length.toString(16)}-${crypto.createHash('sha1').update(gz).digest('hex').slice(0, 12)}"`;
+        sitemapCache.set('sitemap-comparisons.xml', { xml, gzip: gz, at: Date.now(), etag });
+        res.end(footer);
+      }
+    } catch (err) {
+      console.error('[sitemap:sitemap-comparisons.xml]', err);
+      if (!res.headersSent) {
+        res
+          .status(503)
+          .set({ 'Content-Type': 'text/plain; charset=UTF-8', 'Retry-After': '120' })
+          .send('Sitemap temporarily unavailable');
+      } else {
+        res.destroy(err as Error);
+      }
+    }
+  };
+
+  writeBatch();
+}
+
+function handleComparisonsSitemap(req: express.Request, res: express.Response): void {
+  const cached = peekSitemapEntry('sitemap-comparisons.xml');
+  if (cached) {
+    streamCachedSitemap(req, res, cached);
+    return;
+  }
+  streamGenerateComparisons(req, res);
+}
+
+app.get('/sitemap-comparisons.xml', (req, res) => {
+  try {
+    handleComparisonsSitemap(req, res);
+  } catch (err) {
+    console.error('[sitemap:sitemap-comparisons.xml]', err);
+    if (!res.headersSent) {
+      res
+        .status(503)
+        .set({ 'Content-Type': 'text/plain; charset=UTF-8', 'Retry-After': '120' })
+        .send('Sitemap temporarily unavailable');
+    }
+  }
+});
+
 for (const key of Object.keys(SITEMAP_BUILDERS)) {
+  if (key === 'sitemap-comparisons.xml') continue;
   app.get(`/${key}`, (req, res) => {
     try {
       const entry = getSitemapEntry(key);
@@ -558,13 +745,16 @@ for (const key of Object.keys(SITEMAP_BUILDERS)) {
         'Content-Type': 'application/xml; charset=UTF-8',
         'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
         Vary: 'Accept-Encoding',
+        ETag: entry.etag,
       });
       if (acceptsGzip(req)) {
-        // Serve precompressed body — skips compression middleware CPU on large XML.
+        // Precompressed body — compression middleware skipped for /sitemap*.xml.
         res.set('Content-Encoding', 'gzip');
-        res.send(entry.gzip);
+        res.flushHeaders();
+        Readable.from(bufferChunks(entry.gzip, 16 * 1024)).pipe(res);
       } else {
-        res.send(entry.xml);
+        res.flushHeaders();
+        Readable.from(bufferChunks(Buffer.from(entry.xml, 'utf8'), 16 * 1024)).pipe(res);
       }
     } catch (err) {
       // Never fall through to the HTML catch-all on failure.
