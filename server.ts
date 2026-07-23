@@ -550,21 +550,13 @@ function acceptsGzip(req: express.Request): boolean {
   return /\bgzip\b/i.test(value);
 }
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 function* bufferChunks(buf: Buffer, size: number): Generator<Buffer> {
   for (let i = 0; i < buf.length; i += size) {
     yield buf.subarray(i, Math.min(i + size, buf.length));
   }
 }
 
-/** Peek cache only — never sync-build (used by streaming comparisons handler). */
+/** Peek cache only — never sync-build. */
 function peekSitemapEntry(key: string): SitemapCacheEntry | null {
   const hit = sitemapCache.get(key);
   if (!hit) return null;
@@ -574,140 +566,74 @@ function peekSitemapEntry(key: string): SitemapCacheEntry | null {
 }
 
 /**
- * Stream a cached sitemap so headers + first bytes leave before the full body
- * is drained (chunked transfer). Avoids res.send() holding the complete payload.
+ * Comparisons sitemap: cache-first, buffered send.
+ *
+ * Root cause of multi-second repeats: the previous cold path
+ * (streamGenerateComparisons) collected/deduped URLs before sending headers and
+ * forced setImmediate between every 200 URLs while streaming gzip — so a cache
+ * miss (or empty warm) made every slow request look like "cache never works".
+ * HIT path now returns prebuilt gzip/xml with Content-Length in one shot.
  */
-function streamCachedSitemap(req: express.Request, res: express.Response, entry: SitemapCacheEntry): void {
-  const gzip = acceptsGzip(req);
+function handleComparisonsSitemap(req: express.Request, res: express.Response): void {
+  const t0 = performance.now();
+  const mark = (label: string) => {
+    const ms = performance.now() - t0;
+    console.log(`[sitemap-comparisons] ${label}: ${ms.toFixed(0)}ms`);
+    return ms;
+  };
+
+  console.log('[sitemap-comparisons] Request received');
+  mark('Cache lookup start');
+  let entry = peekSitemapEntry('sitemap-comparisons.xml');
+  const lookupMs = mark('Cache lookup');
+  const hit = !!entry;
+  console.log(`[sitemap-comparisons] Cache hit: ${hit}`);
+
+  let generateMs = 0;
+  let gzipMs = 0;
+  if (!entry) {
+    const g0 = performance.now();
+    console.log('[sitemap-comparisons] Cache miss — buildAndCacheSitemap');
+    // Single sync build (URL collect + dedupe + xml + gzip) then cache.
+    entry = buildAndCacheSitemap('sitemap-comparisons.xml');
+    generateMs = performance.now() - g0;
+    gzipMs = generateMs; // gzip is inside buildAndCacheSitemap
+    console.log(`[sitemap-comparisons] Generate XML+gzip: ${generateMs.toFixed(0)}ms`);
+  } else {
+    console.log('[sitemap-comparisons] Using cached XML+gzip (no generation)');
+  }
+
+  const wantGzip = acceptsGzip(req);
+  const body = wantGzip ? entry.gzip : Buffer.from(entry.xml, 'utf8');
+  console.log(
+    `[sitemap-comparisons] Prepare body: gzip=${wantGzip} bytes=${body.length}`
+  );
+
+  const streamAt = mark('Stream start');
   res.status(200);
   res.set({
     'Content-Type': 'application/xml; charset=UTF-8',
     'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
     Vary: 'Accept-Encoding',
     ETag: entry.etag,
-  });
-  if (gzip) res.set('Content-Encoding', 'gzip');
-  // No Content-Length → chunked encoding; flush headers before body.
-  res.flushHeaders();
-
-  const body = gzip ? entry.gzip : Buffer.from(entry.xml, 'utf8');
-  Readable.from(bufferChunks(body, 16 * 1024)).pipe(res);
-}
-
-/**
- * Cold path: write XML (and optional gzip) in chunks so Googlebot's TTFB is the
- * first <?xml / gzip frame, not the full 1.5MB generation.
- */
-function streamGenerateComparisons(req: express.Request, res: express.Response): void {
-  const urls = [
-    ...new Set(listIndexableComparisons().map((p) => `${SITE_URL}/compare/${p.slug}`)),
-  ];
-  const lastmod = new Date().toISOString().slice(0, 10);
-  const wantGzip = acceptsGzip(req);
-
-  res.status(200);
-  res.set({
-    'Content-Type': 'application/xml; charset=UTF-8',
-    'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
-    Vary: 'Accept-Encoding',
+    'Content-Length': String(body.length),
+    'X-Sitemap-Cache': hit ? 'HIT' : 'MISS',
+    'Server-Timing': [
+      `cache;desc="${hit ? 'HIT' : 'MISS'}"`,
+      `lookup;dur=${lookupMs.toFixed(1)}`,
+      `generate;dur=${generateMs.toFixed(1)}`,
+      `total;dur=${(performance.now() - t0).toFixed(1)}`,
+    ].join(', '),
   });
   if (wantGzip) res.set('Content-Encoding', 'gzip');
-  res.flushHeaders();
 
-  const xmlParts: string[] = [];
-  const gzipChunks: Buffer[] = [];
-  const gzip = wantGzip ? zlib.createGzip({ level: 6 }) : null;
-
-  const sink: NodeJS.WritableStream = gzip ?? res;
-  if (gzip) {
-    gzip.on('data', (c: Buffer) => {
-      gzipChunks.push(c);
-      if (!res.write(c)) gzip.pause();
-    });
-    res.on('drain', () => gzip.resume());
-    gzip.on('end', () => {
-      const xml = xmlParts.join('');
-      const gzipBuf = Buffer.concat(gzipChunks);
-      const etag = `W/"${gzipBuf.length.toString(16)}-${crypto.createHash('sha1').update(gzipBuf).digest('hex').slice(0, 12)}"`;
-      sitemapCache.set('sitemap-comparisons.xml', {
-        xml,
-        gzip: gzipBuf,
-        at: Date.now(),
-        etag,
-      });
-      res.end();
-    });
-    gzip.on('error', (err) => {
-      console.error('[sitemap:sitemap-comparisons.xml] gzip', err);
-      if (!res.headersSent) {
-        res.status(503).set({ 'Retry-After': '120' }).end('Sitemap temporarily unavailable');
-      } else {
-        res.destroy(err);
-      }
-    });
-  }
-
-  const header = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`;
-  xmlParts.push(header);
-  sink.write(header);
-
-  const BATCH = 200;
-  let i = 0;
-
-  const writeBatch = () => {
-    try {
-      while (i < urls.length) {
-        let chunk = '';
-        const end = Math.min(i + BATCH, urls.length);
-        for (; i < end; i++) {
-          const loc = escapeXml(urls[i]);
-          chunk += `  <url>\n    <loc>${loc}</loc>\n    <lastmod>${lastmod}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n`;
-        }
-        xmlParts.push(chunk);
-        if (!sink.write(chunk)) {
-          sink.once('drain', writeBatch);
-          return;
-        }
-        // Yield so other requests (and socket flush) can run mid-stream.
-        if (i < urls.length) {
-          setImmediate(writeBatch);
-          return;
-        }
-      }
-      const footer = `</urlset>`;
-      xmlParts.push(footer);
-      if (gzip) {
-        gzip.end(footer);
-      } else {
-        const xml = xmlParts.join('');
-        const gz = zlib.gzipSync(Buffer.from(xml, 'utf8'), { level: 6 });
-        const etag = `W/"${gz.length.toString(16)}-${crypto.createHash('sha1').update(gz).digest('hex').slice(0, 12)}"`;
-        sitemapCache.set('sitemap-comparisons.xml', { xml, gzip: gz, at: Date.now(), etag });
-        res.end(footer);
-      }
-    } catch (err) {
-      console.error('[sitemap:sitemap-comparisons.xml]', err);
-      if (!res.headersSent) {
-        res
-          .status(503)
-          .set({ 'Content-Type': 'text/plain; charset=UTF-8', 'Retry-After': '120' })
-          .send('Sitemap temporarily unavailable');
-      } else {
-        res.destroy(err as Error);
-      }
-    }
-  };
-
-  writeBatch();
-}
-
-function handleComparisonsSitemap(req: express.Request, res: express.Response): void {
-  const cached = peekSitemapEntry('sitemap-comparisons.xml');
-  if (cached) {
-    streamCachedSitemap(req, res, cached);
-    return;
-  }
-  streamGenerateComparisons(req, res);
+  // One-shot send — first byte ≈ header flush; no chunked Readable overhead on HIT.
+  res.end(body, () => {
+    mark('Response completed');
+    console.log(
+      `[sitemap-comparisons] done hit=${hit} lookup=${lookupMs.toFixed(0)}ms generate=${generateMs.toFixed(0)}ms stream=${streamAt.toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`
+    );
+  });
 }
 
 app.get('/sitemap-comparisons.xml', (req, res) => {

@@ -70,6 +70,15 @@ export function cityQueryLabel(city: EligibleCity): string {
 
 /** Indexable comparisons via Comparison Eligibility Engine. */
 let comparisonsCache: ReturnType<typeof listEligibleComparisons> | null = null;
+let comparisonsPublicCache: Array<{
+  slug: string;
+  cityA: string;
+  cityB: string;
+  queryA: string;
+  queryB: string;
+  pageSlugA: string;
+  pageSlugB: string;
+}> | null = null;
 let comparisonsFingerprint = '';
 
 export function listIndexableCities(): EligibleCity[] {
@@ -77,6 +86,7 @@ export function listIndexableCities(): EligibleCity[] {
   const fp = `${cities.length}:${cities[0]?.pageSlug || ''}:${cities[cities.length - 1]?.pageSlug || ''}:${SEO_INDEX_CONFIG.maxIndexableComparisons}`;
   if (fp !== comparisonsFingerprint) {
     comparisonsCache = null;
+    comparisonsPublicCache = null;
     comparisonsFingerprint = fp;
   }
   return cities;
@@ -110,8 +120,12 @@ export function listIndexableComparisons(): Array<{
 }> {
   if (!comparisonsCache) {
     comparisonsCache = listEligibleComparisons(listEligibleCities());
+    comparisonsPublicCache = null;
   }
-  return comparisonsCache.map(({ score: _score, reasons: _reasons, ...pub }) => pub);
+  if (!comparisonsPublicCache) {
+    comparisonsPublicCache = comparisonsCache.map(({ score: _score, reasons: _reasons, ...pub }) => pub);
+  }
+  return comparisonsPublicCache;
 }
 
 export interface CountryPageData {
