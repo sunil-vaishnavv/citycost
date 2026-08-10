@@ -46,7 +46,16 @@ import {
 } from './lib/seo-catalog.js';
 import { listEligibleCities } from './lib/seo-eligibility.js';
 import { SEO_INDEX_CONFIG } from './lib/seo-config.js';
-import { injectSeoIntoHtml, xmlUrlset, xmlSitemapIndex } from './lib/seo-ssr.js';
+import {
+  resolveSeoHtmlAsync,
+  xmlUrlset,
+  xmlUrlsetDated,
+  xmlSitemapIndex,
+} from './lib/seo-ssr.js';
+import {
+  buildBlogSitemapXml,
+  onBlogCacheInvalidate,
+} from './lib/editorial-engine/blog/blog-public.js';
 import { SITE_URL } from './src/utils/seo.js';
 import {
   listAuthorityPages,
@@ -62,6 +71,7 @@ import {
   warmIntentCatalogAsync,
   SEARCH_INTENT_VERSION,
 } from './lib/search-intent/index.js';
+import { createEditorialRouter, initEditorialEngine } from './lib/editorial-engine/index.js';
 
 dotenv.config();
 
@@ -135,6 +145,100 @@ const apiLimiter = rateLimit({
 });
 
 app.use('/api/', apiLimiter);
+
+// Final Editorial Control URL is /admin only — legacy path redirects
+app.use('/editorial-control', (_req, res) => {
+  res.redirect(301, '/admin');
+});
+
+// Editorial Engine (P0 foundation) — independent module; requires MySQL + admin bootstrap
+app.use('/api/editorial', createEditorialRouter());
+
+// Public blog API — published articles only (no drafts/review)
+app.get('/api/blog', async (req, res) => {
+  try {
+    const { listPublishedBlogArticles } = await import(
+      './lib/editorial-engine/db/public-blog-repo.js'
+    );
+    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '12'), 10) || 12, 1), 50);
+    const offset = (page - 1) * limit;
+    const result = await listPublishedBlogArticles({ limit, offset });
+    return res.json({
+      articles: result.articles,
+      total: result.total,
+      page,
+      limit,
+      pages: Math.max(1, Math.ceil(result.total / limit)),
+    });
+  } catch (err) {
+    console.error('GET /api/blog error:', err);
+    return res.status(500).json({ error: 'Failed to load blog' });
+  }
+});
+
+app.get('/api/blog/:slug', async (req, res) => {
+  try {
+    const { getPublishedBlogArticleBySlug } = await import(
+      './lib/editorial-engine/db/public-blog-repo.js'
+    );
+    const { listPublishedBlogArticles } = await import(
+      './lib/editorial-engine/db/public-blog-repo.js'
+    );
+    let article = await getPublishedBlogArticleBySlug(req.params.slug);
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+    // Strip leftover QA cert-batch markers from public titles
+    try {
+      const { hasCertBatchNoise } = await import(
+        './lib/editorial-engine/utils/clean-title.js'
+      );
+      if (hasCertBatchNoise(article.seo_title) || hasCertBatchNoise(article.meta_title)) {
+        const { cleanArticlePublicIdentity } = await import(
+          './lib/editorial-engine/utils/clean-article-identity.js'
+        );
+        await cleanArticlePublicIdentity(article.id);
+        article = (await getPublishedBlogArticleBySlug(req.params.slug)) || article;
+      }
+    } catch (err) {
+      console.warn('blog title cleanup:', (err as Error).message);
+    }
+    const peers = await listPublishedBlogArticles({ limit: 8, offset: 0 });
+    const related = peers.articles
+      .filter((a) => a.slug !== article.slug)
+      .slice(0, 4)
+      .map((a) => ({
+        slug: a.slug,
+        title: a.seo_title,
+        excerpt: a.excerpt,
+        reading_time_minutes: a.reading_time_minutes,
+      }));
+    return res.json({
+      article: {
+        slug: article.slug,
+        seo_title: article.seo_title,
+        meta_title: article.meta_title,
+        meta_description: article.meta_description,
+        excerpt: article.excerpt,
+        content_type: article.content_type,
+        word_count: article.word_count,
+        reading_time_minutes: article.reading_time_minutes,
+        published_at: article.published_at,
+        last_public_update_at: article.last_public_update_at,
+        canonical_url: article.canonical_url,
+        blocks: article.draft.blocks,
+        internal_links: article.internal_links,
+        entity_map: article.entity_map,
+        // Never expose raw_ai_response / prompts
+      },
+      related,
+    });
+  } catch (err) {
+    console.error('GET /api/blog/:slug error:', err);
+    return res.status(500).json({ error: 'Failed to load article' });
+  }
+});
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
@@ -239,6 +343,19 @@ app.get('/api/seo/countries', (_req, res) => {
   res.json({ countries: listIndexableCountries() });
 });
 
+/** Homepage dynamic hub — catalog + published blog cards (read-only). */
+app.get('/api/seo/home-hub', async (_req, res) => {
+  try {
+    const { buildHomeHubPayload } = await import('./lib/public-content/hub.js');
+    const payload = await buildHomeHubPayload();
+    res.setHeader('Cache-Control', 'public, max-age=120');
+    return res.json(payload);
+  } catch (err) {
+    console.error('GET /api/seo/home-hub error:', err);
+    return res.status(500).json({ error: 'Failed to build home hub' });
+  }
+});
+
 app.get('/api/seo/country/:slug', (req, res) => {
   const data = buildCountryPageData(req.params.slug);
   if (!data) return res.status(404).json({ error: 'Country not found in SEO catalog' });
@@ -255,9 +372,8 @@ app.get('/api/seo/compare-links', (req, res) => {
   const a = typeof req.query.a === 'string' ? req.query.a : '';
   const b = typeof req.query.b === 'string' ? req.query.b : '';
   if (!a || !b) return res.status(400).json({ error: 'Missing a and b city names' });
-  const { related, nearby, enrichment } = buildCompareSeoLinks(a, b);
-  // Enrichment is SEO content (safe to expose); quality scores never included
-  return res.json({ related, nearby, enrichment });
+  // Full internal-link payload (additive fields; related/nearby remain for older clients)
+  return res.json(buildCompareSeoLinks(a, b));
 });
 
 app.get('/api/seo/compare/:slug', (req, res) => {
@@ -437,6 +553,7 @@ const SITEMAP_BUILDERS: Record<string, () => string> = {
       `${SITE_URL}/sitemap-intent-landings.xml`,
       `${SITE_URL}/sitemap-intent-categories.xml`,
       `${SITE_URL}/sitemap-intent-country-guides.xml`,
+      `${SITE_URL}/sitemap-blog.xml`,
     ]),
   'sitemap-static.xml': () => xmlUrlset(buildSitemapUrlEntries().home),
   'sitemap-countries.xml': () => xmlUrlset(buildSitemapUrlEntries().countries),
@@ -451,7 +568,26 @@ const SITEMAP_BUILDERS: Record<string, () => string> = {
   'sitemap-intent-landings.xml': () => xmlUrlset(listIndexableCityLandingUrls(SITE_URL)),
   'sitemap-intent-categories.xml': () => xmlUrlset(listIndexableCategoryUrls(SITE_URL)),
   'sitemap-intent-country-guides.xml': () => xmlUrlset(listIndexableCountryGuideUrls(SITE_URL)),
+  // Sync stub — real blog sitemap is built async in getSitemapEntry / buildBlogSitemap
+  'sitemap-blog.xml': () =>
+    xmlUrlsetDated([{ loc: `${SITE_URL}/blog`, lastmod: new Date().toISOString().slice(0, 10) }]),
 };
+
+async function buildBlogSitemapEntry(): Promise<{ xml: string; gzip: Buffer; at: number; etag: string }> {
+  const xml = await buildBlogSitemapXml(xmlUrlsetDated);
+  const gzip = zlib.gzipSync(Buffer.from(xml, 'utf8'), { level: 6 });
+  const etag = `W/"${gzip.length.toString(16)}-${crypto.createHash('sha1').update(gzip).digest('hex').slice(0, 12)}"`;
+  const entry = { xml, gzip, at: Date.now(), etag };
+  sitemapCache.set('sitemap-blog.xml', entry);
+  // Also refresh index so it picks up lastmod freshness
+  sitemapCache.delete('sitemap.xml');
+  return entry;
+}
+
+onBlogCacheInvalidate(() => {
+  sitemapCache.delete('sitemap-blog.xml');
+  sitemapCache.delete('sitemap.xml');
+});
 
 function buildAndCacheSitemap(key: string): SitemapCacheEntry {
   const xml = SITEMAP_BUILDERS[key]();
@@ -474,7 +610,11 @@ function scheduleSitemapRefresh(key: string): void {
           await warmIntentCatalogAsync();
           await new Promise<void>((r) => setImmediate(r));
         }
-        buildAndCacheSitemap(key);
+        if (key === 'sitemap-blog.xml') {
+          await buildBlogSitemapEntry();
+        } else {
+          buildAndCacheSitemap(key);
+        }
       } catch (err) {
         console.warn(`Sitemap refresh failed (${key}):`, err);
       } finally {
@@ -652,9 +792,19 @@ app.get('/sitemap-comparisons.xml', (req, res) => {
 
 for (const key of Object.keys(SITEMAP_BUILDERS)) {
   if (key === 'sitemap-comparisons.xml') continue;
-  app.get(`/${key}`, (req, res) => {
+  app.get(`/${key}`, async (req, res) => {
     try {
-      const entry = getSitemapEntry(key);
+      let entry: SitemapCacheEntry | null;
+      if (key === 'sitemap-blog.xml') {
+        const hit = sitemapCache.get(key);
+        if (hit && Date.now() - hit.at < SITEMAP_TTL_MS) {
+          entry = hit;
+        } else {
+          entry = await buildBlogSitemapEntry();
+        }
+      } else {
+        entry = getSitemapEntry(key);
+      }
       if (!entry) {
         res
           .status(503)
@@ -695,6 +845,8 @@ for (const key of Object.keys(SITEMAP_BUILDERS)) {
 
 async function start() {
   await testConnection();
+  // Editorial P0: schema ensure + seeds + admin bootstrap (no-op if MySQL down)
+  await initEditorialEngine();
 
   const server = http.createServer(app);
 
@@ -710,8 +862,12 @@ async function start() {
         const url = req.originalUrl;
         let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
         template = await vite!.transformIndexHtml(url, template);
-        template = injectSeoIntoHtml(template, url.split('?')[0]);
-        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+        const seo = await resolveSeoHtmlAsync(template, url.split('?')[0]);
+        if (seo.status === 301) {
+          res.redirect(301, seo.location);
+          return;
+        }
+        res.status(seo.status).set({ 'Content-Type': 'text/html' }).end(seo.html);
       } catch (e) {
         vite?.ssrFixStacktrace(e as Error);
         next(e);
@@ -724,11 +880,20 @@ async function start() {
       process.exit(1);
     }
     app.use(express.static(dist, { index: false, maxAge: '7d', etag: true }));
-    app.get('*', (req, res) => {
-      const htmlPath = path.join(dist, 'index.html');
-      let html = fs.readFileSync(htmlPath, 'utf-8');
-      html = injectSeoIntoHtml(html, req.path);
-      res.status(200).set({ 'Content-Type': 'text/html' }).send(html);
+    app.get('*', async (req, res) => {
+      try {
+        const htmlPath = path.join(dist, 'index.html');
+        const template = fs.readFileSync(htmlPath, 'utf-8');
+        const seo = await resolveSeoHtmlAsync(template, req.path);
+        if (seo.status === 301) {
+          res.redirect(301, seo.location);
+          return;
+        }
+        res.status(seo.status).set({ 'Content-Type': 'text/html' }).send(seo.html);
+      } catch (err) {
+        console.error('HTML SSR error:', err);
+        res.status(500).send('Internal Server Error');
+      }
     });
   }
 

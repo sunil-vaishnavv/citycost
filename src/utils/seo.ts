@@ -154,9 +154,22 @@ export function applyHomeMeta() {
   // Schema — WebPage (home)
   setJsonLd('webpage', buildWebPageSchema(title, desc, canon));
 
-  // Remove stale compare schemas
-  removeJsonLd('breadcrumb');
-  removeJsonLd('faq');
+  // Home breadcrumb (single-node list for consistency with other public pages)
+  setJsonLd('breadcrumb', {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: SITE_URL },
+    ],
+  });
+}
+
+/** Apply homepage FAQPage JSON-LD (call after applyHomeMeta when FAQ copy is ready). */
+export function applyHomeFaqSchema(faqs: Array<{ q: string; a: string }>) {
+  if (typeof document === 'undefined') return;
+  const faq = buildFaqPageSchema(faqs);
+  if (faq) setJsonLd('faq', faq);
+  else removeJsonLd('faq');
 }
 
 // ─── Full head update for compare page ───────────────────────────────────────
@@ -164,7 +177,16 @@ export function applyHomeMeta() {
 export function applyCompareMeta(
   cityA: string,
   cityB: string,
-  data?: { cpiA?: number; cpiB?: number; rentA?: number; rentB?: number; ppA?: number; ppB?: number }
+  data?: {
+    cpiA?: number;
+    cpiB?: number;
+    rentA?: number;
+    rentB?: number;
+    ppA?: number;
+    ppB?: number;
+    faqs?: Array<{ q: string; a: string }>;
+    last_updated?: string;
+  }
 ) {
   if (typeof document === 'undefined') return;
 
@@ -172,7 +194,11 @@ export function applyCompareMeta(
   const b      = cityB.split(',')[0].trim();
   const title  = buildCompareTitle(cityA, cityB);
   const desc   = buildCompareDescription(cityA, cityB);
-  const canon  = buildCompareCanonical(cityA, cityB);
+  // Prefer the live compare path so canonical matches requested URL + sitemap slug
+  const pathSlug = typeof window !== 'undefined'
+    ? window.location.pathname.match(/^\/compare\/([a-z0-9-]+-vs-[a-z0-9-]+)$/i)?.[1]?.toLowerCase()
+    : undefined;
+  const canon  = pathSlug ? `${SITE_URL}/compare/${pathSlug}` : buildCompareCanonical(cityA, cityB);
   const kw     = buildCompareKeywords(cityA, cityB);
 
   document.title = title;
@@ -208,11 +234,20 @@ export function applyCompareMeta(
   // Schema — Breadcrumb
   setJsonLd('breadcrumb', buildBreadcrumbSchema(a, b, canon));
 
-  // Schema — FAQ
-  setJsonLd('faq', buildFAQSchema(a, b, data));
-
+  // Schema — FAQ: prefer enrichment/on-page FAQs, else index-derived FAQ
+  const faqFromCopy = buildFaqPageSchema(data?.faqs);
+  if (faqFromCopy) {
+    setJsonLd('faq', faqFromCopy);
+  } else if (data && ((data.cpiA ?? 0) > 0 || (data.cpiB ?? 0) > 0)) {
+    setJsonLd('faq', buildFAQSchema(a, b, data));
+  } else {
+    removeJsonLd('faq');
+  }
   // Schema — WebPage (compare)
-  setJsonLd('webpage', buildWebPageSchema(title, desc, canon, 'ComparisonPage'));
+  setJsonLd(
+    'webpage',
+    buildWebPageSchema(title, desc, canon, 'ComparisonPage', data?.last_updated)
+  );
 
   // Keep org + website schemas
   setJsonLd('organization', buildOrganizationSchema());
@@ -291,8 +326,13 @@ export function buildWebPageSchema(
   title: string,
   description: string,
   url: string,
-  type: string = 'WebPage'
+  type: string = 'WebPage',
+  dateModified?: string | null
 ) {
+  const modified =
+    (dateModified && /^\d{4}-\d{2}-\d{2}/.test(dateModified)
+      ? dateModified.slice(0, 10)
+      : null) || null;
   return {
     '@context': 'https://schema.org',
     '@type': type,
@@ -302,7 +342,7 @@ export function buildWebPageSchema(
     inLanguage: 'en-US',
     isPartOf: { '@type': 'WebSite', url: SITE_URL, name: SITE_NAME },
     publisher: { '@type': 'Organization', name: SITE_NAME, url: SITE_URL },
-    dateModified: new Date().toISOString().split('T')[0],
+    ...(modified ? { dateModified: modified } : {}),
   };
 }
 
@@ -330,6 +370,21 @@ export function buildBreadcrumbSchema(cityA: string, cityB: string, url: string)
         item: url,
       },
     ],
+  };
+}
+
+export function buildFaqPageSchema(
+  faqs: Array<{ q: string; a: string }> | null | undefined
+): Record<string, unknown> | null {
+  if (!faqs || faqs.length === 0) return null;
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: faqs.map((f) => ({
+      '@type': 'Question',
+      name: f.q,
+      acceptedAnswer: { '@type': 'Answer', text: f.a },
+    })),
   };
 }
 
@@ -457,6 +512,7 @@ export function applyCountryMeta(data: {
   currency: string;
   summary: string;
   faqs: Array<{ q: string; a: string }>;
+  last_updated?: string;
 }) {
   if (typeof document === 'undefined') return;
   const title = buildCountryTitle(data.name);
@@ -488,7 +544,7 @@ export function applyCountryMeta(data: {
 
   setJsonLd('organization', buildOrganizationSchema());
   setJsonLd('website', buildWebSiteSchema());
-  setJsonLd('webpage', buildWebPageSchema(title, desc, canon));
+  setJsonLd('webpage', buildWebPageSchema(title, desc, canon, 'WebPage', data.last_updated));
   setJsonLd('place', {
     '@context': 'https://schema.org',
     '@type': 'Country',
@@ -505,15 +561,9 @@ export function applyCountryMeta(data: {
       { '@type': 'ListItem', position: 3, name: data.name, item: canon },
     ],
   });
-  setJsonLd('faq', {
-    '@context': 'https://schema.org',
-    '@type': 'FAQPage',
-    mainEntity: data.faqs.map((f) => ({
-      '@type': 'Question',
-      name: f.q,
-      acceptedAnswer: { '@type': 'Answer', text: f.a },
-    })),
-  });
+  const faq = buildFaqPageSchema(data.faqs);
+  if (faq) setJsonLd('faq', faq);
+  else removeJsonLd('faq');
 }
 
 export function applyCityMeta(data: {
@@ -525,6 +575,7 @@ export function applyCityMeta(data: {
   longitude: number | null;
   faqs: Array<{ q: string; a: string }>;
   seo_description?: string;
+  last_updated?: string;
 }) {
   if (typeof document === 'undefined') return;
   const title = buildCityTitle(data.city, data.country);
@@ -556,7 +607,7 @@ export function applyCityMeta(data: {
 
   setJsonLd('organization', buildOrganizationSchema());
   setJsonLd('website', buildWebSiteSchema());
-  setJsonLd('webpage', buildWebPageSchema(title, desc, canon));
+  setJsonLd('webpage', buildWebPageSchema(title, desc, canon, 'WebPage', data.last_updated));
   setJsonLd('city', {
     '@context': 'https://schema.org',
     '@type': 'City',
@@ -576,15 +627,9 @@ export function applyCityMeta(data: {
       { '@type': 'ListItem', position: 3, name: data.city, item: canon },
     ],
   });
-  setJsonLd('faq', {
-    '@context': 'https://schema.org',
-    '@type': 'FAQPage',
-    mainEntity: data.faqs.map((f) => ({
-      '@type': 'Question',
-      name: f.q,
-      acceptedAnswer: { '@type': 'Answer', text: f.a },
-    })),
-  });
+  const faq = buildFaqPageSchema(data.faqs);
+  if (faq) setJsonLd('faq', faq);
+  else removeJsonLd('faq');
 }
 
 /** Authority / EEAT static pages (methodology, about, legal, etc.). */

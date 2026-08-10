@@ -128,8 +128,25 @@ export interface CompareKnowledge {
   rentB: number;
   ppA: number;
   ppB: number;
+  groceriesA?: number;
+  groceriesB?: number;
+  restaurantsA?: number;
+  restaurantsB?: number;
   currencyA?: string;
   currencyB?: string;
+  /** Local→USD (or site base) rates for basket conversion */
+  exchangeRateA?: number;
+  exchangeRateB?: number;
+  rent1brA?: number | null;
+  rent1brB?: number | null;
+  utilitiesA?: number | null;
+  utilitiesB?: number | null;
+  internetA?: number | null;
+  internetB?: number | null;
+  transportA?: number | null;
+  transportB?: number | null;
+  salaryA?: number | null;
+  salaryB?: number | null;
 }
 
 export interface CityContentDocument {
@@ -164,7 +181,7 @@ export interface CompareContentDocument {
   links: InternalLink[];
   enrichment: {
     executive_summary: string;
-    category_winners: Array<{ category: string; winner: string; note: string }>;
+    category_winners: Array<{ category: string; winner: string; note: string; gapPct?: number }>;
     monthly_savings: string;
     annual_savings: string;
     cost_difference_pct: number;
@@ -177,6 +194,19 @@ export interface CompareContentDocument {
     pros: { cityA: string[]; cityB: string[] };
     cons: { cityA: string[]; cityB: string[] };
     decision_summary: string;
+    /** Structured decision payload (additive). */
+    overall_winner?: { city: string; reason: string; costDifferencePct: number };
+    monthly_difference?: {
+      amountUsd: number | null;
+      pct: number;
+      cheaperCity: string;
+      dearerCity: string;
+      mode: 'basket' | 'cpi';
+      summary: string;
+    };
+    biggest_difference?: { category: string; winner: string; gapPct: number; note: string } | null;
+    best_for?: Array<{ persona: string; city: string; reason: string }>;
+    key_takeaways?: string[];
   };
   word_count: number;
 }

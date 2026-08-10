@@ -1,6 +1,32 @@
-import { ChevronRight, Globe, MapPin, TrendingUp, TrendingDown, Sparkles } from 'lucide-react';
+import { Globe, MapPin, TrendingUp, TrendingDown } from 'lucide-react';
 import TrustStrip from './TrustStrip';
+import PageTrustBlock from './PageTrustBlock';
 import { buildCountryTrustSignals } from '../../lib/eeat-engine/trust-signals.js';
+import {
+  buildCountryBudgetSection,
+  buildCountryConclusion,
+  buildCountryIntro,
+  buildCountryLivingExpensesSection,
+  buildCountryMajorCitiesSection,
+  buildCountryOverviewSection,
+  buildCountryRegionalSection,
+  buildCountryToc,
+  expandCountryFaqs,
+  type CountryContentInput,
+} from '../../lib/public-content/country-content.js';
+import ContentPageShell, {
+  ContentBreadcrumb,
+  ContentCard,
+  ContentCtaBand,
+  ContentHero,
+  ContentLinkGroup,
+  ContentNavLink,
+  ContentSectionHeading,
+} from './ContentPageShell';
+import PageMetaBar from './PageMetaBar';
+import PublicFaq from './PublicFaq';
+import PublicProseSection from './PublicProseSection';
+import PublicToc from './PublicToc';
 
 export interface CountryPageViewData {
   code: string;
@@ -16,12 +42,28 @@ export interface CountryPageViewData {
   avg_cpi: number;
   cheapest: Array<{ city: string; slug: string; rent: number; cpi: number }>;
   expensive: Array<{ city: string; slug: string; rent: number; cpi: number }>;
-  cities: Array<{ city: string; state?: string; slug: string; population?: number; cpi: number; rent: number }>;
+  cities: Array<{
+    city: string;
+    state?: string;
+    slug: string;
+    population?: number;
+    cpi: number;
+    rent: number;
+  }>;
   top_comparisons: Array<{ slug: string; label: string }>;
+  most_compared_cities?: Array<{
+    city: string;
+    slug: string;
+    state?: string;
+    compare_count: number;
+  }>;
   related_countries: Array<{ slug: string; name: string }>;
   faqs: Array<{ q: string; a: string }>;
   summary: string;
   canonical: string;
+  last_updated?: string;
+  content_version?: string;
+  related_articles?: Array<{ slug: string; title: string; excerpt?: string | null }>;
 }
 
 interface Props {
@@ -34,36 +76,64 @@ function fmt(n: number, symbol: string) {
   return `${symbol}${Math.round(n).toLocaleString()}`;
 }
 
+function toInput(data: CountryPageViewData): CountryContentInput {
+  return {
+    name: data.name,
+    slug: data.slug,
+    currency: data.currency,
+    symbol: data.symbol,
+    population: data.population,
+    avg_salary: data.avg_salary,
+    avg_rent: data.avg_rent,
+    avg_cpi: data.avg_cpi,
+    avg_groceries_index: data.avg_groceries_index,
+    cheapest: data.cheapest,
+    expensive: data.expensive,
+    cities: data.cities,
+    top_comparisons: data.top_comparisons,
+    most_compared_cities: data.most_compared_cities,
+    related_countries: data.related_countries,
+    faqs: data.faqs,
+    summary: data.summary,
+  };
+}
+
 export default function CountryPage({ data, onNavigate, onCompare }: Props) {
-  const trust = buildCountryTrustSignals();
+  const trust = buildCountryTrustSignals({
+    last_updated: data.last_updated,
+    content_version: data.content_version,
+  });
+  const input = toInput(data);
+  const toc = buildCountryToc(input);
+  const faqs = expandCountryFaqs(input);
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-300">
-      <nav className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-slate-400" aria-label="Breadcrumb">
-        <button type="button" onClick={() => onNavigate('/')} className="hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer">Home</button>
-        <ChevronRight className="w-3 h-3" />
-        <span className="text-slate-600 dark:text-slate-300">Countries</span>
-        <ChevronRight className="w-3 h-3" />
-        <span className="text-slate-800 dark:text-white">{data.name}</span>
-      </nav>
+    <ContentPageShell>
+      <ContentBreadcrumb
+        onNavigate={onNavigate}
+        items={[
+          { label: 'Home', href: '/' },
+          { label: 'Countries' },
+          { label: data.name },
+        ]}
+      />
 
-      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xs">
-        <div className="flex items-start gap-3">
-          <Globe className="w-8 h-8 text-indigo-500 shrink-0 mt-0.5" />
-          <div className="space-y-2">
-            <h1 className="text-xl sm:text-2xl font-extrabold font-display text-slate-800 dark:text-white">
-              Cost of Living in {data.name}
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-              Country overview for {data.name}: currency {data.currency}, indexed cities, average rent and salaries, plus links to city pages and comparisons.
-            </p>
-          </div>
-        </div>
+      <ContentHero
+        eyebrow="Country overview"
+        icon={<Globe className="h-3.5 w-3.5" />}
+        title={`Cost of Living in ${data.name}`}
+        intro={buildCountryIntro(input)}
+        meta={<PageMetaBar lastUpdated={data.last_updated} onNavigate={onNavigate} />}
+      />
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+      <ContentCard>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { label: 'Currency', value: data.currency },
-            { label: 'Population (indexed)', value: data.population ? data.population.toLocaleString() : '—' },
+            {
+              label: 'Population (indexed)',
+              value: data.population ? data.population.toLocaleString() : '—',
+            },
             { label: 'Avg salary', value: fmt(data.avg_salary, data.symbol) },
             { label: 'Avg 1BR rent', value: fmt(data.avg_rent, data.symbol) },
             { label: 'Avg groceries idx', value: String(data.avg_groceries_index) },
@@ -71,134 +141,189 @@ export default function CountryPage({ data, onNavigate, onCompare }: Props) {
             { label: 'Indexed cities', value: String(data.cities.length) },
             { label: 'FX vs USD', value: String(data.exchange_rate) },
           ].map((item) => (
-            <div key={item.label} className="bg-slate-50 dark:bg-slate-800/60 border border-slate-150 dark:border-slate-800 rounded-2xl p-3">
-              <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">{item.label}</div>
-              <div className="text-sm font-extrabold text-slate-800 dark:text-white mt-1">{item.value}</div>
+            <div
+              key={item.label}
+              className="bg-slate-50 dark:bg-slate-800/60 border border-slate-150 dark:border-slate-800 rounded-2xl p-3"
+            >
+              <div className="text-[9px] uppercase tracking-wider font-bold text-slate-400">
+                {item.label}
+              </div>
+              <div className="text-sm font-extrabold text-slate-800 dark:text-white mt-1">
+                {item.value}
+              </div>
             </div>
           ))}
         </div>
 
-        <TrustStrip trust={trust} onNavigate={onNavigate} />
-      </section>
+        <div className="mt-5">
+          <TrustStrip trust={trust} onNavigate={onNavigate} />
+        </div>
+      </ContentCard>
 
-      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-3 shadow-xs">
-        <h2 className="text-sm font-extrabold font-display text-slate-800 dark:text-white flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-indigo-500" />
-          AI Summary
-        </h2>
-        <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed font-medium">{data.summary}</p>
-      </section>
+      <PublicToc items={toc} />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 space-y-3 shadow-xs">
-          <h2 className="text-[10px] uppercase tracking-wider font-bold text-slate-400 flex items-center gap-1.5">
-            <TrendingDown className="w-4 h-4 text-emerald-500" />
+      <PublicProseSection {...buildCountryOverviewSection(input)} />
+      <PublicProseSection {...buildCountryRegionalSection(input)} />
+      <PublicProseSection {...buildCountryLivingExpensesSection(input)} />
+      <PublicProseSection {...buildCountryMajorCitiesSection(input)} />
+      <PublicProseSection {...buildCountryBudgetSection(input)} />
+
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <ContentCard>
+          <h2 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">
+            <TrendingDown className="h-4 w-4 text-emerald-500" />
             Cheapest cities
           </h2>
-          <ul className="space-y-2">
+          <ul className="mt-4 space-y-2">
             {data.cheapest.map((c) => (
               <li key={c.slug}>
                 <button
                   type="button"
                   onClick={() => onNavigate(`/city/${c.slug}`)}
-                  className="w-full text-left text-xs font-bold text-slate-700 dark:text-slate-200 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3 py-2.5 rounded-xl flex justify-between cursor-pointer"
+                  className="flex w-full cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-left text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:border-teal-500/40 dark:hover:text-teal-300"
                 >
                   <span>{c.city}</span>
-                  <span className="text-slate-400 font-mono">{fmt(c.rent, data.symbol)}</span>
+                  <span className="font-mono text-slate-400">{fmt(c.rent, data.symbol)}</span>
                 </button>
               </li>
             ))}
           </ul>
-        </section>
+        </ContentCard>
 
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 space-y-3 shadow-xs">
-          <h2 className="text-[10px] uppercase tracking-wider font-bold text-slate-400 flex items-center gap-1.5">
-            <TrendingUp className="w-4 h-4 text-rose-500" />
+        <ContentCard>
+          <h2 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">
+            <TrendingUp className="h-4 w-4 text-rose-500" />
             Most expensive cities
           </h2>
-          <ul className="space-y-2">
+          <ul className="mt-4 space-y-2">
             {data.expensive.map((c) => (
               <li key={c.slug}>
                 <button
                   type="button"
                   onClick={() => onNavigate(`/city/${c.slug}`)}
-                  className="w-full text-left text-xs font-bold text-slate-700 dark:text-slate-200 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3 py-2.5 rounded-xl flex justify-between cursor-pointer"
+                  className="flex w-full cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-left text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:border-teal-500/40 dark:hover:text-teal-300"
                 >
                   <span>{c.city}</span>
-                  <span className="text-slate-400 font-mono">{fmt(c.rent, data.symbol)}</span>
+                  <span className="font-mono text-slate-400">{fmt(c.rent, data.symbol)}</span>
                 </button>
               </li>
             ))}
           </ul>
-        </section>
+        </ContentCard>
       </div>
 
-      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xs">
-        <h2 className="text-sm font-extrabold font-display text-slate-800 dark:text-white flex items-center gap-2">
-          <MapPin className="w-4 h-4 text-indigo-500" />
-          Cities in {data.name}
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-          {data.cities.map((c) => (
-            <button
-              key={c.slug}
-              type="button"
-              onClick={() => onNavigate(`/city/${c.slug}`)}
-              className="text-left text-[11px] font-extrabold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3.5 py-3 rounded-xl cursor-pointer truncate"
-            >
-              {c.city}{c.state ? `, ${c.state}` : ''}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {data.top_comparisons.length > 0 && (
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xs">
-          <h2 className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Top comparisons</h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-            {data.top_comparisons.map((c) => (
+      {(data.most_compared_cities?.length ?? 0) > 0 && (
+        <ContentCard>
+          <ContentSectionHeading>Most compared cities</ContentSectionHeading>
+          <div className="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            {data.most_compared_cities!.map((c) => (
               <button
-                key={c.slug}
+                key={`mc-${c.slug}`}
                 type="button"
-                onClick={() => onCompare(c.slug)}
-                className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3 py-3 rounded-xl cursor-pointer text-center truncate"
+                onClick={() => onNavigate(`/city/${c.slug}`)}
+                className="cursor-pointer truncate rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:border-teal-500/40 dark:hover:text-teal-300"
               >
-                {c.label}
+                {c.city}
               </button>
             ))}
           </div>
-        </section>
+        </ContentCard>
+      )}
+
+      <ContentCard>
+        <div id="country-city-list" className="scroll-mt-28">
+          <ContentSectionHeading>
+            <span className="inline-flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-teal-500" />
+              Cities in {data.name}
+            </span>
+          </ContentSectionHeading>
+          <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {data.cities.map((c) => (
+              <button
+                key={c.slug}
+                type="button"
+                onClick={() => onNavigate(`/city/${c.slug}`)}
+                className="cursor-pointer truncate rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-left text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:border-teal-500/40 dark:hover:text-teal-300"
+              >
+                {c.city}
+                {c.state ? `, ${c.state}` : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+      </ContentCard>
+
+      {data.top_comparisons.length > 0 && (
+        <ContentCard>
+          <div id="related-comparisons" className="scroll-mt-28">
+            <ContentSectionHeading>Top comparisons</ContentSectionHeading>
+            <div className="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+              {data.top_comparisons.map((c) => (
+                <button
+                  key={c.slug}
+                  type="button"
+                  onClick={() => onCompare(c.slug)}
+                  className="cursor-pointer truncate rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-center text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:border-teal-500/40 dark:hover:text-teal-300"
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </ContentCard>
       )}
 
       {data.related_countries.length > 0 && (
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 space-y-3 shadow-xs">
-          <h2 className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Related countries</h2>
-          <div className="flex flex-wrap gap-2">
-            {data.related_countries.map((c) => (
-              <button
-                key={c.slug}
-                type="button"
-                onClick={() => onNavigate(`/country/${c.slug}`)}
-                className="text-[11px] font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-xl cursor-pointer"
-              >
-                {c.name}
-              </button>
-            ))}
+        <ContentCard>
+          <div id="related-countries" className="scroll-mt-28">
+            <ContentLinkGroup
+              title="Related countries"
+              links={data.related_countries.map((c) => ({
+                label: c.name,
+                href: `/country/${c.slug}`,
+              }))}
+              onNavigate={onNavigate}
+            />
           </div>
-        </section>
+        </ContentCard>
       )}
 
-      <section className="bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xs">
-        <h2 className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Frequently Asked Questions</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {data.faqs.map((f) => (
-            <div key={f.q} className="bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-4 rounded-2xl">
-              <h3 className="text-xs font-extrabold text-slate-800 dark:text-slate-200">{f.q}</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-medium leading-relaxed">{f.a}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-    </div>
+      {(data.related_articles?.length ?? 0) > 0 && (
+        <ContentCard>
+          <ContentSectionHeading>Related articles</ContentSectionHeading>
+          <ul className="mt-4 space-y-2">
+            {data.related_articles!.map((a) => (
+              <li key={a.slug}>
+                <ContentNavLink
+                  href={`/blog/${a.slug}`}
+                  onNavigate={onNavigate}
+                  className="text-sm font-semibold text-teal-700 hover:underline dark:text-teal-300"
+                >
+                  {a.title}
+                </ContentNavLink>
+              </li>
+            ))}
+          </ul>
+        </ContentCard>
+      )}
+
+      <PublicFaq id="country-faq" items={faqs} onNavigate={onNavigate} />
+
+      <PublicProseSection {...buildCountryConclusion(input)} />
+
+      <PageTrustBlock
+        lastUpdated={data.last_updated}
+        pageSources={['CityCost Index (aggregated eligible cities)']}
+        onNavigate={onNavigate}
+      />
+
+      <ContentCtaBand title={`Compare cities in ${data.name}`}>
+        <p>
+          Pick two metros from the list above, or use the calculator at the top of the site to
+          compare any {data.name} city with a peer abroad.
+        </p>
+      </ContentCtaBand>
+    </ContentPageShell>
   );
 }

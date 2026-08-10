@@ -88,6 +88,38 @@ export function buildAuthorityBreadcrumb(doc: AuthorityPageDoc) {
   };
 }
 
+/** Dataset schema for published cost-of-living page payloads (factual; no ratings). */
+export function buildDatasetSchema(input: {
+  name: string;
+  description: string;
+  url: string;
+  dateModified?: string | null;
+  variableMeasured?: string[];
+}) {
+  const dateModified =
+    input.dateModified && /^\d{4}-\d{2}-\d{2}/.test(input.dateModified)
+      ? input.dateModified.slice(0, 10)
+      : undefined;
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Dataset',
+    name: input.name,
+    description: input.description,
+    url: input.url,
+    ...(dateModified ? { dateModified } : {}),
+    creator: {
+      '@type': 'Organization',
+      name: SITE_NAME,
+      url: SITE_URL,
+    },
+    license: `${SITE_URL}${AUTHORITY_PATHS.terms}`,
+    isAccessibleForFree: true,
+    variableMeasured: input.variableMeasured?.length
+      ? input.variableMeasured
+      : ['Cost of living index', 'Rent index', 'Purchasing power index'],
+  };
+}
+
 /**
  * Reserved graph node for future editorial / author / reviewer profiles.
  * Not injected on public pages until profiles exist.

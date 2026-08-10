@@ -25,7 +25,7 @@ async function logEvent(data: LogData): Promise<void> {
         request_method, request_path, city_query, response_time_ms,
         groq_token_usage, groq_model_used, error_message,
         cache_hit, cache_type, ip_address
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         data.request_method || null,
         data.request_path || null,
@@ -36,11 +36,11 @@ async function logEvent(data: LogData): Promise<void> {
         data.error_message || null,
         data.cache_hit || false,
         data.cache_type || null,
-        data.ip_address || null
+        data.ip_address || null,
       ]
     );
-  } catch (err) {
-    // Silently fail, don't log to console (already know DB is unavailable)
+  } catch {
+    // Silently fail — logging must never break requests
   }
 }
 

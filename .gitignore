@@ -40,3 +40,5 @@ Thumbs.db
 # Optional local tooling
 *.pem
 .turbo/
+
+.tools/

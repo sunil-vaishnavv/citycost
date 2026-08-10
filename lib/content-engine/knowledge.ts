@@ -123,8 +123,24 @@ export function buildCompareKnowledge(input: {
   rentB: number;
   ppA: number;
   ppB: number;
+  groceriesA?: number;
+  groceriesB?: number;
+  restaurantsA?: number;
+  restaurantsB?: number;
   currencyA?: string;
   currencyB?: string;
+  exchangeRateA?: number;
+  exchangeRateB?: number;
+  rent1brA?: number | null;
+  rent1brB?: number | null;
+  utilitiesA?: number | null;
+  utilitiesB?: number | null;
+  internetA?: number | null;
+  internetB?: number | null;
+  transportA?: number | null;
+  transportB?: number | null;
+  salaryA?: number | null;
+  salaryB?: number | null;
 }): CompareKnowledge {
   return { ...input };
 }

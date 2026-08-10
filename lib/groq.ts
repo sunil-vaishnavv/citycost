@@ -4,16 +4,31 @@ import type { PriceItem, IndexMetrics } from '../src/types.js';
 
 dotenv.config();
 
-// Initialize Groq client
-const groqApiKey = process.env.GROQ_API_KEY;
 let groq: Groq | null = null;
+let groqClientKey: string | null = null;
 
-if (groqApiKey && groqApiKey !== 'YOUR_GROQ_API_KEY') {
-  groq = new Groq({ apiKey: groqApiKey });
-  console.log('✅ Groq client initialized');
-} else {
-  console.warn('⚠️  GROQ_API_KEY not set — Groq features disabled, will use fallback data');
+function resolveGroqKey(): string | null {
+  const key = process.env.GROQ_API_KEY?.trim();
+  if (!key || key === 'YOUR_GROQ_API_KEY') return null;
+  return key;
 }
+
+/** Hot-reload COL Groq client after admin updates GROQ_API_KEY. */
+export function reconfigureGroqClient(): void {
+  const key = resolveGroqKey();
+  if (!key) {
+    groq = null;
+    groqClientKey = null;
+    console.warn('⚠️  GROQ_API_KEY not set — Groq features disabled, will use fallback data');
+    return;
+  }
+  if (groq && groqClientKey === key) return;
+  groq = new Groq({ apiKey: key });
+  groqClientKey = key;
+  console.log('✅ Groq client initialized');
+}
+
+reconfigureGroqClient();
 
 interface GeneratedCityData {
   city: string;

@@ -204,8 +204,24 @@ export async function generateCompareContent(input: {
   rentB: number;
   ppA: number;
   ppB: number;
+  groceriesA?: number;
+  groceriesB?: number;
+  restaurantsA?: number;
+  restaurantsB?: number;
   currencyA?: string;
   currencyB?: string;
+  exchangeRateA?: number;
+  exchangeRateB?: number;
+  rent1brA?: number | null;
+  rent1brB?: number | null;
+  utilitiesA?: number | null;
+  utilitiesB?: number | null;
+  internetA?: number | null;
+  internetB?: number | null;
+  transportA?: number | null;
+  transportB?: number | null;
+  salaryA?: number | null;
+  salaryB?: number | null;
   force?: boolean;
 }): Promise<CompareContentDocument> {
   const knowledge = buildCompareKnowledge(input);
@@ -216,6 +232,14 @@ export async function generateCompareContent(input: {
     rentB: knowledge.rentB,
     ppA: knowledge.ppA,
     ppB: knowledge.ppB,
+    groceriesA: knowledge.groceriesA,
+    groceriesB: knowledge.groceriesB,
+    restaurantsA: knowledge.restaurantsA,
+    restaurantsB: knowledge.restaurantsB,
+    rent1brA: knowledge.rent1brA,
+    rent1brB: knowledge.rent1brB,
+    salaryA: knowledge.salaryA,
+    salaryB: knowledge.salaryB,
   });
 
   if (!input.force) {
@@ -375,6 +399,14 @@ export function generateCompareContentSync(input: Parameters<typeof generateComp
     rentB: knowledge.rentB,
     ppA: knowledge.ppA,
     ppB: knowledge.ppB,
+    groceriesA: knowledge.groceriesA,
+    groceriesB: knowledge.groceriesB,
+    restaurantsA: knowledge.restaurantsA,
+    restaurantsB: knowledge.restaurantsB,
+    rent1brA: knowledge.rent1brA,
+    rent1brB: knowledge.rent1brB,
+    salaryA: knowledge.salaryA,
+    salaryB: knowledge.salaryB,
   });
 
   if (!input.force) {

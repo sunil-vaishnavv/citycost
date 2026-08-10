@@ -1,6 +1,7 @@
 /**
  * City data repository — cache-first over the COL engine.
  * Never overwrites verified/real rows with estimates.
+ * SQL: PostgreSQL (Neon). Business logic unchanged from MySQL era.
  */
 
 import * as dbModule from './db.js';
@@ -18,10 +19,11 @@ async function getCityByName(cityName: string, country?: string): Promise<any | 
   const pool = getPool();
   if (!pool) return null;
   try {
-    let query = 'SELECT * FROM cities WHERE LOWER(city_name) = LOWER(?) ';
+    let query =
+      'SELECT * FROM cities WHERE LOWER(city_name) = LOWER($1) ';
     const params: any[] = [cityName.trim()];
     if (country) {
-      query += 'AND LOWER(country) = LOWER(?) ';
+      query += 'AND LOWER(country) = LOWER($2) ';
       params.push(country.trim());
     }
     query += 'LIMIT 1';
@@ -38,7 +40,7 @@ async function getCityById(id: number): Promise<any | null> {
   const pool = getPool();
   if (!pool) return null;
   try {
-    const [rows] = await pool.query('SELECT * FROM cities WHERE id = ? LIMIT 1', [id]);
+    const [rows] = await pool.query('SELECT * FROM cities WHERE id = $1 LIMIT 1', [id]);
     const cities = rows as any[];
     return cities.length ? cities[0] : null;
   } catch (err) {
@@ -52,7 +54,7 @@ async function getCityIndices(cityId: number): Promise<any | null> {
   if (!pool) return null;
   try {
     const [rows] = await pool.query(
-      'SELECT * FROM city_indices WHERE city_id = ? LIMIT 1',
+      'SELECT * FROM city_indices WHERE city_id = $1 LIMIT 1',
       [cityId]
     );
     const indices = rows as any[];
@@ -68,7 +70,7 @@ async function getCityPrices(cityId: number): Promise<PriceItem[]> {
   if (!pool) return [];
   try {
     const [rows] = await pool.query(
-      'SELECT item_id, item_name, average_price, highest_price, lowest_price, currency FROM city_prices WHERE city_id = ? ORDER BY item_id ASC',
+      'SELECT item_id, item_name, average_price, highest_price, lowest_price, currency FROM city_prices WHERE city_id = $1 ORDER BY item_id ASC',
       [cityId]
     );
     return rows as PriceItem[];
@@ -81,7 +83,9 @@ async function getCityPrices(cityId: number): Promise<PriceItem[]> {
 function isVerifiedSource(source: string | null | undefined): boolean {
   if (!source) return false;
   const s = source.toLowerCase();
-  return ['surveyed', 'real', 'numbeo', 'api', 'government', 'cache_verified'].some((k) => s.includes(k));
+  return ['surveyed', 'real', 'numbeo', 'api', 'government', 'cache_verified'].some((k) =>
+    s.includes(k)
+  );
 }
 
 async function saveCityData(
@@ -105,7 +109,7 @@ async function saveCityData(
 
     try {
       const [existingRows] = await conn.query(
-        'SELECT id, data_source, is_verified FROM cities WHERE LOWER(city_name)=LOWER(?) AND LOWER(country)=LOWER(?) LIMIT 1',
+        'SELECT id, data_source, is_verified FROM cities WHERE LOWER(city_name)=LOWER($1) AND LOWER(country)=LOWER($2) LIMIT 1',
         [data.city, data.country]
       );
       const existing = (existingRows as any[])[0];
@@ -126,12 +130,13 @@ async function saveCityData(
         `INSERT INTO cities
           (city_name, country, currency, symbol, exchange_rate, is_ai_generated,
            state, country_code, data_source, confidence, is_verified, tier, population, estimation_note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           currency=VALUES(currency),
-           symbol=VALUES(symbol),
-           exchange_rate=VALUES(exchange_rate),
-           updated_at=CURRENT_TIMESTAMP`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         ON CONFLICT (city_name, country) DO UPDATE SET
+           currency = EXCLUDED.currency,
+           symbol = EXCLUDED.symbol,
+           exchange_rate = EXCLUDED.exchange_rate,
+           updated_at = (NOW() AT TIME ZONE 'UTC')
+         RETURNING id`,
         [
           data.city,
           data.country,
@@ -143,7 +148,7 @@ async function saveCityData(
           data.country_code || null,
           data.data_source || 'estimated',
           data.confidence ?? null,
-          data.is_verified ? 1 : 0,
+          Boolean(data.is_verified),
           data.tier ?? null,
           data.population ?? null,
           data.estimation_note || null,
@@ -152,15 +157,16 @@ async function saveCityData(
       const header = cityResult as any;
       if (header.insertId) cityId = header.insertId;
     } catch {
-      // Fallback for v1 schema without new columns
+      // Fallback for narrower column set
       const [cityResult] = await conn.query(
         `INSERT INTO cities (city_name, country, currency, symbol, exchange_rate, is_ai_generated)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           currency=VALUES(currency),
-           symbol=VALUES(symbol),
-           exchange_rate=VALUES(exchange_rate),
-           updated_at=CURRENT_TIMESTAMP`,
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (city_name, country) DO UPDATE SET
+           currency = EXCLUDED.currency,
+           symbol = EXCLUDED.symbol,
+           exchange_rate = EXCLUDED.exchange_rate,
+           updated_at = (NOW() AT TIME ZONE 'UTC')
+         RETURNING id`,
         [data.city, data.country, data.currency, data.symbol, data.exchange_rate, false]
       );
       const header = cityResult as any;
@@ -179,14 +185,14 @@ async function saveCityData(
     await conn.query(
       `INSERT INTO city_indices
         (city_id, cpi_index, rent_index, groceries_index, restaurant_price_index, local_purchasing_power_index)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         cpi_index=VALUES(cpi_index),
-         rent_index=VALUES(rent_index),
-         groceries_index=VALUES(groceries_index),
-         restaurant_price_index=VALUES(restaurant_price_index),
-         local_purchasing_power_index=VALUES(local_purchasing_power_index),
-         updated_at=CURRENT_TIMESTAMP`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (city_id) DO UPDATE SET
+         cpi_index = EXCLUDED.cpi_index,
+         rent_index = EXCLUDED.rent_index,
+         groceries_index = EXCLUDED.groceries_index,
+         restaurant_price_index = EXCLUDED.restaurant_price_index,
+         local_purchasing_power_index = EXCLUDED.local_purchasing_power_index,
+         updated_at = (NOW() AT TIME ZONE 'UTC')`,
       [
         cityId,
         data.indices.cpi_index,
@@ -201,15 +207,23 @@ async function saveCityData(
       await conn.query(
         `INSERT INTO city_prices
           (city_id, item_id, item_name, average_price, highest_price, lowest_price, currency)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           item_name=VALUES(item_name),
-           average_price=VALUES(average_price),
-           highest_price=VALUES(highest_price),
-           lowest_price=VALUES(lowest_price),
-           currency=VALUES(currency),
-           updated_at=CURRENT_TIMESTAMP`,
-        [cityId, p.item_id, p.item_name, p.average_price, p.highest_price, p.lowest_price, p.currency]
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (city_id, item_id) DO UPDATE SET
+           item_name = EXCLUDED.item_name,
+           average_price = EXCLUDED.average_price,
+           highest_price = EXCLUDED.highest_price,
+           lowest_price = EXCLUDED.lowest_price,
+           currency = EXCLUDED.currency,
+           updated_at = (NOW() AT TIME ZONE 'UTC')`,
+        [
+          cityId,
+          p.item_id,
+          p.item_name,
+          p.average_price,
+          p.highest_price,
+          p.lowest_price,
+          p.currency,
+        ]
       );
     }
 
@@ -242,7 +256,7 @@ function toCityData(engine: ColEngineResult, cityId: number): CityData & { city_
 
 /**
  * Cache-first:
- *  1. Verified MySQL row (never discarded for estimate)
+ *  1. Verified DB row (never discarded for estimate)
  *  2. COL engine (surveyed → Numbeo → nearby → regional)
  *  3. Persist (without overwriting verified)
  */

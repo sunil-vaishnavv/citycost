@@ -7,10 +7,6 @@ import type { DataQualityTier, TrustSignalDisplay, EeatPageRecord } from './type
 import { EEAT_ENGINE_VERSION } from './types.js';
 import { AUTHORITY_PATHS } from './links.js';
 
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 /** Map confidence / source labels to a transparent quality tier. */
 export function inferQualityTier(confidenceLabel: string, dataSource: string): DataQualityTier {
   const c = (confidenceLabel || '').toLowerCase();
@@ -51,10 +47,10 @@ export function buildTrustSignals(input: {
   const data_source = (input.data_source || 'CityCost Index').trim();
   const confidence = (input.confidence_label || 'Standard').trim();
   const quality_tier = inferQualityTier(confidence, data_source);
-  const last_updated = input.last_updated || todayIsoDate();
+  const last_updated = (input.last_updated || '').trim().slice(0, 10);
 
   return {
-    last_updated,
+    last_updated: last_updated || '',
     confidence,
     data_source,
     quality_tier,
@@ -63,7 +59,7 @@ export function buildTrustSignals(input: {
     report_issue_href: `${AUTHORITY_PATHS.contact}?topic=data-issue`,
     content_version: input.content_version || EEAT_ENGINE_VERSION,
     review_status: 'published',
-    freshness_label: `Updated ${last_updated}`,
+    freshness_label: last_updated ? `Updated ${last_updated}` : 'Update date from content meta when available',
   };
 }
 
@@ -84,6 +80,8 @@ export function buildCompareTrustSignals(input: {
   sourceB?: string | null;
   confidenceA?: string | null;
   confidenceB?: string | null;
+  last_updated?: string | null;
+  content_version?: string | null;
 }): TrustSignalDisplay {
   const sources = [input.sourceA, input.sourceB].filter(Boolean).join(' · ') || 'CityCost Index';
   const conf =
@@ -91,6 +89,8 @@ export function buildCompareTrustSignals(input: {
   return buildTrustSignals({
     data_source: sources,
     confidence_label: conf,
+    last_updated: input.last_updated,
+    content_version: input.content_version,
   });
 }
 

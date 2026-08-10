@@ -179,7 +179,7 @@ export interface CompareSeoEnrichment {
   executive_summary: string;
   winner_summary: string;
   detailed_analysis: string;
-  category_winners: Array<{ category: string; winner: string; note: string }>;
+  category_winners: Array<{ category: string; winner: string; note: string; gapPct?: number }>;
   budget_comparison: string;
   monthly_savings: string;
   cost_difference_pct: number;
@@ -198,6 +198,19 @@ export interface CompareSeoEnrichment {
   cons: { cityA: string[]; cityB: string[] };
   faqs: Array<{ q: string; a: string }>;
   internal_link_hints: Array<{ label: string; href: string }>;
+  /** Additive structured decision fields */
+  overall_winner?: { city: string; reason: string; costDifferencePct: number };
+  monthly_difference?: {
+    amountUsd: number | null;
+    pct: number;
+    cheaperCity: string;
+    dearerCity: string;
+    mode: 'basket' | 'cpi';
+    summary: string;
+  };
+  biggest_difference?: { category: string; winner: string; gapPct: number; note: string } | null;
+  best_for?: Array<{ persona: string; city: string; reason: string }>;
+  key_takeaways?: string[];
 }
 
 export function buildCompareEnrichment(

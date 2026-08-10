@@ -22,3 +22,5 @@ export {
 } from './links.js';
 
 export { getAuthorityPage, listAuthorityPages, DATA_SOURCES, AUTHORITY_PAGES } from './pages.js';
+
+export { CONTENT_AUTHOR, getContentAuthorLabel, listActiveDataSourceNames, getShortMethodologyText } from './page-trust.js';

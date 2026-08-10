@@ -5,6 +5,8 @@
 import type { CompareKnowledge, ContentBlock, CompareContentDocument, FaqItem, InternalLink } from './types.js';
 import { generateCompareFaqs } from './faq.js';
 import { blockWords, pickVariant } from './templates.js';
+import { buildComparisonDecision } from '../comparison-decision.js';
+
 export function composeCompareDocument(
   k: CompareKnowledge,
   metaBase: { data_version: string; generated_at: string }
@@ -18,6 +20,37 @@ export function composeCompareDocument(
   const ppWinner = k.ppA >= k.ppB ? a : b;
   const seed = k.slug;
 
+  const decision = buildComparisonDecision(
+    {
+      name: a,
+      cpi: k.cpiA,
+      rent: k.rentA,
+      groceries: k.groceriesA ?? 0,
+      restaurants: k.restaurantsA ?? 0,
+      purchasingPower: k.ppA,
+      exchangeRate: k.exchangeRateA,
+      rent1br: k.rent1brA,
+      utilities: k.utilitiesA,
+      internet: k.internetA,
+      transport: k.transportA,
+      salary: k.salaryA,
+    },
+    {
+      name: b,
+      cpi: k.cpiB,
+      rent: k.rentB,
+      groceries: k.groceriesB ?? 0,
+      restaurants: k.restaurantsB ?? 0,
+      purchasingPower: k.ppB,
+      exchangeRate: k.exchangeRateB,
+      rent1br: k.rent1brB,
+      utilities: k.utilitiesB,
+      internet: k.internetB,
+      transport: k.transportB,
+      salary: k.salaryB,
+    }
+  );
+
   const executive_summary = pickVariant(seed + '|exec', [
     `Executive summary: ${cheaper} leads on CPI (${Math.min(k.cpiA, k.cpiB)} vs ${Math.max(k.cpiA, k.cpiB)}, NYC=100), ${rentWinner} leads on rent index, and ${ppWinner} leads on purchasing power. Validate neighbourhood rents before relocating — city-wide winners can reverse at district scale.`,
     `Takeaway for ${a} vs ${b}: everyday costs favor ${cheaper} (~${diff.toFixed(0)}% CPI gap), housing index favors ${rentWinner}, wage stretch favors ${ppWinner}. Use category winners, not a single headline, when the binding constraint is rent or income.`,
@@ -28,9 +61,7 @@ export function composeCompareDocument(
     `${a} versus ${b} is not a single number. With a ${diff.toFixed(0)}% CPI spread, groceries and services tend to move with ${cheaper}, while housing follows ${rentWinner}'s rent index. Purchasing power (${k.ppA} vs ${k.ppB}) decides whether local wages offset local prices.`,
   ]);
 
-  const monthly = pickVariant(seed + '|mon', [
-    `Monthly savings skew toward ${cheaper} on everyday spend; housing savings appear mainly when your unit tracks ${rentWinner}'s rent index rather than a luxury micro-market. Build a personal basket before treating the CPI gap as cash in hand.`,
-  ]);
+  const monthly = decision.monthly.summary;
   const annual = `Annualizing the CPI gap (~${diff.toFixed(0)}%) is illustrative only — convert using your actual basket. Housing dominates most household budgets and may dominate annual outcomes more than CPI alone. Revisit the comparison if either city's rent or salary data version changes.`;
 
   const students = `Students: prioritize ${rentWinner} for housing index, then map campus transport. Shared flats and dorms can erase city-wide gaps that look decisive on a 1BR centre reference.`;
@@ -65,20 +96,69 @@ export function composeCompareDocument(
     ],
   };
 
-  const decision_summary = `Decision summary: choose ${cheaper} to minimize everyday CPI, ${rentWinner} if housing is binding, and re-check offers if your income is locked to ${dearer}.`;
+  const decision_summary =
+    decision.overall_winner.reason ||
+    `Decision summary: choose ${cheaper} to minimize everyday CPI, ${rentWinner} if housing is binding, and re-check offers if your income is locked to ${dearer}.`;
+
+  const categoryBullets = decision.category_winners.map(
+    (w) => `${w.category}: ${w.winner}${w.gapPct ? ` (${w.gapPct}% gap)` : ''}`
+  );
 
   const blocks: ContentBlock[] = [
     { id: 'executive_summary', title: 'Executive Summary', paragraphs: [executive_summary], words: blockWords([executive_summary]) },
     {
+      id: 'overall_winner',
+      title: 'Overall Cost Winner',
+      paragraphs: [
+        `${decision.overall_winner.city} wins on overall cost (CPI gap ~${decision.overall_winner.costDifferencePct}%).`,
+        decision.overall_winner.reason,
+      ],
+      words: blockWords([decision.overall_winner.reason]),
+    },
+    {
+      id: 'monthly_difference',
+      title: 'Monthly Cost Difference',
+      paragraphs: [decision.monthly.summary],
+      words: blockWords([decision.monthly.summary]),
+    },
+    {
       id: 'category_winners',
       title: 'Category Winners',
-      paragraphs: ['Winners derived only from paired indices:'],
-      bullets: [
-        `Overall CPI: ${cheaper}`,
-        `Rent index: ${rentWinner}`,
-        `Purchasing power: ${ppWinner}`,
-      ],
+      paragraphs: ['Winners derived only from paired indices and basket prices:'],
+      bullets: categoryBullets.length
+        ? categoryBullets
+        : [
+            `Overall CPI: ${cheaper}`,
+            `Rent index: ${rentWinner}`,
+            `Purchasing power: ${ppWinner}`,
+          ],
       words: 40,
+    },
+    ...(decision.biggest_difference
+      ? [
+          {
+            id: 'biggest_difference',
+            title: 'Biggest Difference',
+            paragraphs: [
+              `${decision.biggest_difference.category}: ${decision.biggest_difference.winner} leads with a ${decision.biggest_difference.gapPct}% gap. ${decision.biggest_difference.note}`,
+            ],
+            words: 30,
+          } satisfies ContentBlock,
+        ]
+      : []),
+    {
+      id: 'best_for',
+      title: 'Quick Decision',
+      paragraphs: ['Best-fit city by persona using available metrics only:'],
+      bullets: decision.best_for.map((x) => `${x.persona}: ${x.city} — ${x.reason}`),
+      words: 50,
+    },
+    {
+      id: 'key_takeaways',
+      title: 'Key Takeaways',
+      paragraphs: ['Key takeaways from measurable gaps:'],
+      bullets: decision.key_takeaways,
+      words: blockWords(decision.key_takeaways),
     },
     { id: 'detailed_breakdown', title: 'Detailed Breakdown', paragraphs: [detailed], words: blockWords([detailed]) },
     { id: 'monthly_savings', title: 'Monthly Savings', paragraphs: [monthly], words: blockWords([monthly]) },
@@ -126,14 +206,15 @@ export function composeCompareDocument(
     links,
     enrichment: {
       executive_summary,
-      category_winners: [
-        { category: 'Overall CPI', winner: cheaper, note: `CPI ${Math.min(k.cpiA, k.cpiB)} vs ${Math.max(k.cpiA, k.cpiB)}` },
-        { category: 'Rent', winner: rentWinner, note: `Rent index ${Math.min(k.rentA, k.rentB)} vs ${Math.max(k.rentA, k.rentB)}` },
-        { category: 'Purchasing power', winner: ppWinner, note: `PP ${Math.max(k.ppA, k.ppB)} vs ${Math.min(k.ppA, k.ppB)}` },
-      ],
+      category_winners: decision.category_winners.map((w) => ({
+        category: w.category,
+        winner: w.winner,
+        note: w.note,
+        gapPct: w.gapPct,
+      })),
       monthly_savings: monthly,
       annual_savings: annual,
-      cost_difference_pct: Math.round(diff),
+      cost_difference_pct: decision.overall_winner.costDifferencePct || Math.round(diff),
       who_benefits,
       students,
       families,
@@ -143,6 +224,11 @@ export function composeCompareDocument(
       pros,
       cons,
       decision_summary,
+      overall_winner: decision.overall_winner,
+      monthly_difference: decision.monthly,
+      biggest_difference: decision.biggest_difference,
+      best_for: decision.best_for,
+      key_takeaways: decision.key_takeaways,
     },
     word_count,
   };

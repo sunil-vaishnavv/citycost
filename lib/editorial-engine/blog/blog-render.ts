@@ -1,0 +1,249 @@
+/**
+ * Render structured article blocks to SSR HTML + inject internal links.
+ */
+
+import type { WriterDraftPayload, DraftBlock } from '../writer/draft-validate.js';
+import type { InternalLinkRecommendation } from '../seo/internal-links.js';
+import { blockContentText } from '../reviewer/text-utils.js';
+import { linkifyBarePathsInHtml } from './linkify-paths.js';
+
+function esc(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderInlineWithLinks(
+  text: string,
+  links: InternalLinkRecommendation[],
+  used: Set<string>
+): string {
+  let html = esc(text);
+  // Prefer longer anchors first
+  const ordered = [...links].sort((a, b) => b.anchor.length - a.anchor.length);
+  for (const link of ordered) {
+    if (used.has(link.target)) continue;
+    const anchor = link.anchor.trim();
+    if (anchor.length < 3) continue;
+    // Search in original text for case-preserving replace
+    const rawIdx = text.toLowerCase().indexOf(anchor.toLowerCase());
+    if (rawIdx === -1) continue;
+    const actual = text.slice(rawIdx, rawIdx + anchor.length);
+    const needle = esc(actual);
+    const pos = html.indexOf(needle);
+    if (pos === -1) continue;
+    const href = link.target.startsWith('http') ? link.target : link.target;
+    const a = `<a href="${esc(href)}" class="blog-inline-link">${needle}</a>`;
+    html = html.slice(0, pos) + a + html.slice(pos + needle.length);
+    used.add(link.target);
+  }
+  // Convert leftover bare /city/... and authority paths into real links
+  html = linkifyBarePathsInHtml(html, esc);
+  return html;
+}
+
+function renderFaq(
+  content: unknown,
+  links: InternalLinkRecommendation[],
+  used: Set<string>
+): string {
+  if (!Array.isArray(content)) {
+    return `<p>${renderInlineWithLinks(String(content || ''), links, used)}</p>`;
+  }
+  return content
+    .map((item) => {
+      if (!item || typeof item !== 'object') return '';
+      const q = String(
+        (item as { q?: string; question?: string }).q ||
+          (item as { question?: string }).question ||
+          ''
+      );
+      const a = String(
+        (item as { a?: string; answer?: string }).a ||
+          (item as { answer?: string }).answer ||
+          ''
+      );
+      if (!q || !a) return '';
+      return `<div class="blog-faq-item"><h3>${esc(q)}</h3><p>${renderInlineWithLinks(a, links, used)}</p></div>`;
+    })
+    .join('\n');
+}
+
+function renderList(
+  content: unknown,
+  links: InternalLinkRecommendation[],
+  used: Set<string>
+): string {
+  if (!Array.isArray(content)) {
+    return `<p>${renderInlineWithLinks(String(content || ''), links, used)}</p>`;
+  }
+  const items = content
+    .map((item) => {
+      if (typeof item === 'string') {
+        return `<li>${renderInlineWithLinks(item, links, used)}</li>`;
+      }
+      return `<li>${esc(JSON.stringify(item))}</li>`;
+    })
+    .join('');
+  return `<ul>${items}</ul>`;
+}
+
+function renderTable(content: unknown): string {
+  if (!content || typeof content !== 'object') return `<p>${esc(String(content || ''))}</p>`;
+  const obj = content as { headers?: string[]; rows?: unknown[]; columns?: string[] };
+  const rows = Array.isArray(obj.rows) ? obj.rows : null;
+  if (!rows?.length) {
+    if (Array.isArray(content)) {
+      return renderTable({ rows: content });
+    }
+    return `<pre>${esc(JSON.stringify(content, null, 2))}</pre>`;
+  }
+  const normalized = rows.map((r) =>
+    Array.isArray(r)
+      ? r.map((c) => String(c ?? ''))
+      : r && typeof r === 'object'
+        ? Object.values(r as Record<string, unknown>).map((c) => String(c ?? ''))
+        : [String(r)]
+  );
+  const colCount = Math.max(...normalized.map((r) => r.length), 1);
+  const headers =
+    Array.isArray(obj.headers) && obj.headers.length
+      ? obj.headers.map(String)
+      : Array.isArray(obj.columns) && obj.columns.length
+        ? obj.columns.map(String)
+        : null;
+  const head = headers
+    ? `<thead><tr>${headers
+        .slice(0, colCount)
+        .map((h) => `<th>${esc(h)}</th>`)
+        .join('')}</tr></thead>`
+    : '';
+  const body = normalized
+    .map(
+      (r) =>
+        `<tr>${Array.from({ length: colCount }, (_, i) => `<td>${esc(r[i] ?? '')}</td>`).join(
+          ''
+        )}</tr>`
+    )
+    .join('');
+  return `<div class="blog-table-wrap"><table>${head}<tbody>${body}</tbody></table></div>`;
+}
+
+export function buildTocHtml(blocks: DraftBlock[]): string {
+  const headings = blocks
+    .filter((b) => b.type === 'heading' || (b.heading && b.type !== 'intro'))
+    .map((b) => (b.heading || blockContentText(b)).trim())
+    .filter((h) => h && !/^table of contents|^contents$/i.test(h));
+  if (!headings.length) return '';
+  const items = headings
+    .map((h, i) => {
+      const id = `section-${i + 1}`;
+      return `<li><a href="#${id}">${esc(h)}</a></li>`;
+    })
+    .join('');
+  return `<nav class="blog-toc" aria-label="Table of contents"><h2>Table of contents</h2><ol>${items}</ol></nav>`;
+}
+
+export function renderArticleBlocksHtml(
+  draft: WriterDraftPayload,
+  links: InternalLinkRecommendation[] = []
+): string {
+  const used = new Set<string>();
+  const blocks = draft.blocks || [];
+  let headingIndex = 0;
+  const parts: string[] = [];
+
+  for (const block of blocks) {
+    const heading = (block.heading || '').trim();
+    const isToc =
+      /^table of contents|^contents$/i.test(heading) ||
+      (block.type === 'list' && /table of contents|contents/i.test(blockContentText(block)));
+
+    if (isToc) {
+      // Prefer generated TOC once
+      continue;
+    }
+
+    if (block.type === 'heading' || (heading && ['paragraph', 'list', 'comparison', 'table', 'faq', 'summary', 'tip', 'warning'].includes(block.type) && heading)) {
+      if (heading && !/^table of contents/i.test(heading)) {
+        headingIndex += 1;
+        parts.push(`<h2 id="section-${headingIndex}">${esc(heading)}</h2>`);
+      }
+    }
+
+    switch (block.type) {
+      case 'intro':
+      case 'paragraph':
+      case 'summary':
+        parts.push(
+          `<p class="blog-p blog-${block.type}">${renderInlineWithLinks(blockContentText(block), links, used)}</p>`
+        );
+        break;
+      case 'tip':
+        parts.push(
+          `<aside class="blog-tip"><strong>Tip:</strong> ${renderInlineWithLinks(blockContentText(block), links, used)}</aside>`
+        );
+        break;
+      case 'warning':
+        parts.push(
+          `<aside class="blog-warning"><strong>Note:</strong> ${renderInlineWithLinks(blockContentText(block), links, used)}</aside>`
+        );
+        break;
+      case 'list':
+        parts.push(renderList(block.content, links, used));
+        break;
+      case 'table':
+      case 'comparison':
+        parts.push(renderTable(block.content));
+        break;
+      case 'faq':
+        parts.push(
+          `<section class="blog-faq"><h2>FAQ</h2>${renderFaq(block.content, links, used)}</section>`
+        );
+        break;
+      case 'heading':
+        // already emitted
+        break;
+      default:
+        parts.push(`<p>${renderInlineWithLinks(blockContentText(block), links, used)}</p>`);
+    }
+  }
+
+  const toc = buildTocHtml(blocks);
+  return `${toc}\n${parts.join('\n')}`;
+}
+
+export function renderRelatedLinksHtml(input: {
+  links: InternalLinkRecommendation[];
+  relatedArticles?: Array<{ slug: string; title: string }>;
+}): string {
+  const groups: Record<string, InternalLinkRecommendation[]> = {};
+  for (const l of input.links) {
+    (groups[l.link_kind] ||= []).push(l);
+  }
+  const sections: string[] = [];
+  const order = ['comparison', 'city', 'country', 'calculator', 'blog', 'authority'] as const;
+  const labels: Record<string, string> = {
+    comparison: 'Related comparisons',
+    city: 'Related cities',
+    country: 'Related countries',
+    calculator: 'Tools',
+    blog: 'Related guides',
+    authority: 'About our data',
+  };
+  for (const kind of order) {
+    const items = groups[kind];
+    if (!items?.length) continue;
+    const lis = items
+      .slice(0, 6)
+      .map((l) => `<li><a href="${esc(l.target)}">${esc(l.anchor)}</a></li>`)
+      .join('');
+    sections.push(`<div class="blog-related-group"><h3>${labels[kind]}</h3><ul>${lis}</ul></div>`);
+  }
+  if (input.relatedArticles?.length) {
+    const lis = input.relatedArticles
+      .map((a) => `<li><a href="/blog/${esc(a.slug)}">${esc(a.title)}</a></li>`)
+      .join('');
+    sections.push(`<div class="blog-related-group"><h3>More guides</h3><ul>${lis}</ul></div>`);
+  }
+  if (!sections.length) return '';
+  return `<section class="blog-related"><h2>Explore CityCost</h2>${sections.join('\n')}</section>`;
+}

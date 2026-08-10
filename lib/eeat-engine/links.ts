@@ -24,8 +24,11 @@ export const AUTHORITY_NAV: Array<{ id: AuthorityPageId; label: string; href: st
   { id: 'disclaimer', label: 'Disclaimer', href: AUTHORITY_PATHS.disclaimer },
 ];
 
-/** Footer subset — high EEAT value, crawlable. */
-export const AUTHORITY_FOOTER_LINKS = AUTHORITY_NAV;
+/** Footer subset — high EEAT value, crawlable. Includes public Blog. */
+export const AUTHORITY_FOOTER_LINKS: Array<{ label: string; href: string }> = [
+  { label: 'Blog', href: '/blog' },
+  ...AUTHORITY_NAV,
+];
 
 /** Contextual links for knowledge pages (city / country / compare). */
 export const KNOWLEDGE_PAGE_AUTHORITY_LINKS = [

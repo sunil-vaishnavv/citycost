@@ -25,7 +25,7 @@ export default function TrustStrip({ trust, onNavigate, compact }: Props) {
         Data transparency
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] sm:text-[11px] font-bold text-slate-600 dark:text-slate-300">
-        <span>Last updated: {trust.last_updated}</span>
+        {trust.last_updated ? <span>Last updated: {trust.last_updated}</span> : null}
         <span>Confidence: {trust.confidence}</span>
         <span>Source: {trust.data_source}</span>
         <span className="text-indigo-600 dark:text-indigo-400">{trust.quality_label}</span>

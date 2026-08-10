@@ -30,6 +30,14 @@ export {
   qualityTierLabel,
 } from './trust-signals.js';
 
+export {
+  listActiveDataSourceNames,
+  getShortMethodologyText,
+  resolvePageLastUpdated,
+  buildTrustBlockHtml,
+  normalizeIsoDate,
+} from './page-trust.js';
+
 export { getAuthorityPage, listAuthorityPages, DATA_SOURCES, AUTHORITY_PAGES } from './pages.js';
 
 export {
@@ -37,4 +45,5 @@ export {
   buildAuthorityWebPageSchema,
   buildAuthorityBreadcrumb,
   buildEditorialTeamPlaceholder,
+  buildDatasetSchema,
 } from './schema.js';

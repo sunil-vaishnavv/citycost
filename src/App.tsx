@@ -23,11 +23,16 @@ import {
 
 import { AdUnit } from './components/AdUnit';
 import { ConsentBanner } from './components/ConsentBanner';
+import SiteFooter from './components/SiteFooter';
 import { SummaryDashboard } from './components/SummaryDashboard';
+import { ComparisonDecisionPanel } from './components/ComparisonDecisionPanel';
 import { IndexChart } from './components/IndexChart';
 import { DetailedPriceList } from './components/DetailedPriceList';
+import PageTrustBlock from './components/PageTrustBlock';
+import SoftErrorBoundary from './components/SoftErrorBoundary';
 import type { CountryPageViewData } from './components/CountryPage';
 import type { CityPageViewData } from './components/CityPage';
+import type { BlogArticleView } from './components/BlogArticlePage';
 
 import { CityOption, CityData } from './types';
 import { 
@@ -49,7 +54,6 @@ import {
 import {
   getAuthorityPage,
   isAuthorityPath,
-  AUTHORITY_FOOTER_LINKS,
   type AuthorityPageId,
 } from '../lib/eeat-engine/client.js';
 import {
@@ -63,8 +67,41 @@ const CountryPage = lazy(() => import('./components/CountryPage'));
 const CityPage = lazy(() => import('./components/CityPage'));
 const AuthorityPage = lazy(() => import('./components/AuthorityPage'));
 const IntentLandingPage = lazy(() => import('./components/IntentLandingPage'));
+const BlogIndexPage = lazy(() => import('./components/BlogIndexPage'));
+const BlogArticlePage = lazy(() => import('./components/BlogArticlePage'));
+const EditorialAdminApp = lazy(() => import('./components/editorial/EditorialAdminApp'));
+const HomepageSeoContent = lazy(() => import('./components/HomepageSeoContent'));
+const CompareContentSections = lazy(() => import('./components/CompareContentSections'));
+
+function isEditorialAdminPath(path: string): boolean {
+  return path === '/admin' || path.startsWith('/admin/');
+}
+
+function isLegacyEditorialPath(path: string): boolean {
+  return path === '/editorial-control' || path.startsWith('/editorial-control/');
+}
 
 export default function App() {
+  const initialPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+
+  // Single final Editorial login URL: /admin
+  if (typeof window !== 'undefined' && isLegacyEditorialPath(initialPath)) {
+    window.location.replace('/admin');
+    return null;
+  }
+
+  if (isEditorialAdminPath(initialPath)) {
+    return (
+      <Suspense fallback={<div className="min-h-screen grid place-items-center text-slate-500 text-sm">Loading Editorial Control…</div>}>
+        <EditorialAdminApp />
+      </Suspense>
+    );
+  }
+
+  return <CityCostApp />;
+}
+
+function CityCostApp() {
   const [cities, setCities] = useState<CityOption[]>([]);
   const [loadingCities, setLoadingCities] = useState(true);
   const [baseSuggestions, setBaseSuggestions] = useState<CityOption[]>([]);
@@ -127,6 +164,9 @@ export default function App() {
     setSeoCity(null);
     setAuthorityPageId(null);
     setIntentPage(null);
+    setBlogIndex(false);
+    setBlogArticle(null);
+    setBlogRelated([]);
     setCompareSeoLinks(null);
     setDataBase(null);
     setDataCompare(null);
@@ -153,11 +193,23 @@ export default function App() {
   const [seoCity, setSeoCity] = useState<CityPageViewData | null>(null);
   const [authorityPageId, setAuthorityPageId] = useState<AuthorityPageId | null>(null);
   const [intentPage, setIntentPage] = useState<IntentLandingPublic | null>(null);
+  const [blogIndex, setBlogIndex] = useState(false);
+  const [blogArticle, setBlogArticle] = useState<BlogArticleView | null>(null);
+  const [blogRelated, setBlogRelated] = useState<
+    Array<{ slug: string; title: string; excerpt?: string | null; reading_time_minutes?: number | null }>
+  >([]);
   const [seoPageLoading, setSeoPageLoading] = useState(false);
   const [catalogCountries, setCatalogCountries] = useState<Array<{ slug: string; name: string }>>([]);
   const [compareSeoLinks, setCompareSeoLinks] = useState<{
     related: Array<{ slug: string; label: string }>;
     nearby: Array<{ slug: string; label: string }>;
+    city_pages?: Array<{ slug: string; label: string; href: string }>;
+    country_pages?: Array<{ slug: string; label: string; href: string }>;
+    cheaper_alternatives?: Array<{ slug: string; label: string }>;
+    expensive_alternatives?: Array<{ slug: string; label: string }>;
+    last_updated?: string;
+    page_sources?: string[];
+    enrichment?: import('../lib/seo-content.js').CompareSeoEnrichment;
   } | null>(null);
   
   const baseRef = useRef<HTMLDivElement>(null);
@@ -179,12 +231,57 @@ export default function App() {
     setCompareSeoLinks(null);
   }
 
+  async function loadBlogIndex() {
+    setSeoPageLoading(false);
+    setIsRoute404(false);
+    setSeoCountry(null);
+    setSeoCity(null);
+    setAuthorityPageId(null);
+    setIntentPage(null);
+    setBlogArticle(null);
+    setBlogRelated([]);
+    clearComparisonState();
+    setBlogIndex(true);
+    document.title = 'Cost of Living Guides & Insights | CityCost Global';
+  }
+
+  async function loadBlogArticle(slug: string) {
+    setSeoPageLoading(true);
+    setIsRoute404(false);
+    setSeoCountry(null);
+    setSeoCity(null);
+    setAuthorityPageId(null);
+    setIntentPage(null);
+    setBlogIndex(false);
+    clearComparisonState();
+    try {
+      const res = await fetch(`/api/blog/${encodeURIComponent(slug)}`);
+      if (!res.ok) {
+        setBlogArticle(null);
+        setIsRoute404(true);
+        return;
+      }
+      const data = await res.json();
+      setBlogArticle(data.article as BlogArticleView);
+      setBlogRelated(data.related || []);
+      document.title = `${data.article?.meta_title || data.article?.seo_title || 'Guide'} | CityCost Global`;
+    } catch (err) {
+      console.error('Blog article load failed:', err);
+      setBlogArticle(null);
+      setIsRoute404(true);
+    } finally {
+      setSeoPageLoading(false);
+    }
+  }
+
   async function loadCountryPage(slug: string) {
     setSeoPageLoading(true);
     setIsRoute404(false);
     setSeoCity(null);
     setAuthorityPageId(null);
     setIntentPage(null);
+    setBlogIndex(false);
+    setBlogArticle(null);
     clearComparisonState();
     try {
       const res = await fetch(`/api/seo/country/${encodeURIComponent(slug)}`);
@@ -211,6 +308,8 @@ export default function App() {
     setSeoCountry(null);
     setAuthorityPageId(null);
     setIntentPage(null);
+    setBlogIndex(false);
+    setBlogArticle(null);
     clearComparisonState();
     try {
       const res = await fetch(`/api/seo/city/${encodeURIComponent(slug)}`);
@@ -242,6 +341,8 @@ export default function App() {
     setSeoCountry(null);
     setSeoCity(null);
     setIntentPage(null);
+    setBlogIndex(false);
+    setBlogArticle(null);
     clearComparisonState();
     setAuthorityPageId(id);
     applyAuthorityMeta(doc);
@@ -253,6 +354,8 @@ export default function App() {
     setSeoCountry(null);
     setSeoCity(null);
     setAuthorityPageId(null);
+    setBlogIndex(false);
+    setBlogArticle(null);
     clearComparisonState();
     try {
       const clean = path.split('?')[0];
@@ -285,6 +388,7 @@ export default function App() {
     const cityLanding = parseCityLandingPath(clean);
     const countryMatch = clean.match(/^\/country\/([a-z0-9-]+)$/i);
     const cityMatch = clean.match(/^\/city\/([a-z0-9-]+)$/i);
+    const blogMatch = clean.match(/^\/blog\/([a-z0-9-]+)$/i);
     if (clean === '/' || clean === '') {
       goHome();
       return;
@@ -295,6 +399,14 @@ export default function App() {
     }
     if (categoryHub || countryGuide || cityLanding) {
       void loadIntentPage(clean);
+      return;
+    }
+    if (clean === '/blog') {
+      void loadBlogIndex();
+      return;
+    }
+    if (blogMatch) {
+      void loadBlogArticle(blogMatch[1]);
       return;
     }
     if (countryMatch) {
@@ -316,6 +428,8 @@ export default function App() {
     setSeoCity(null);
     setAuthorityPageId(null);
     setIntentPage(null);
+    setBlogIndex(false);
+    setBlogArticle(null);
     setIsRoute404(false);
     if (typeof window !== 'undefined') {
       window.history.pushState({}, '', `/compare/${slug}`);
@@ -443,6 +557,8 @@ export default function App() {
         setSeoCity(null);
         setAuthorityPageId(null);
         setIntentPage(null);
+        setBlogIndex(false);
+        setBlogArticle(null);
         clearComparisonState();
         applyHomeMeta();
         return;
@@ -456,6 +572,17 @@ export default function App() {
 
       if (parseCategoryHubPath(path) || parseCountryGuidePath(path) || parseCityLandingPath(path)) {
         void loadIntentPage(path);
+        return;
+      }
+
+      if (path === '/blog') {
+        void loadBlogIndex();
+        return;
+      }
+
+      const blogMatch = path.match(/^\/blog\/([a-z0-9-]+)$/i);
+      if (blogMatch) {
+        void loadBlogArticle(blogMatch[1]);
         return;
       }
 
@@ -475,6 +602,8 @@ export default function App() {
         setSeoCity(null);
         setAuthorityPageId(null);
         setIntentPage(null);
+        setBlogIndex(false);
+        setBlogArticle(null);
         routeRestored.current = false;
         void openCompareSlug(`${compareMatch[1]}-vs-${compareMatch[2]}`);
         return;
@@ -504,11 +633,13 @@ export default function App() {
         rentB: dataCompare.indices.rent_index,
         ppA:   dataBase.indices.local_purchasing_power_index,
         ppB:   dataCompare.indices.local_purchasing_power_index,
+        faqs: compareSeoLinks?.enrichment?.faqs,
+        last_updated: compareSeoLinks?.last_updated,
       });
     } else if (!isComparePage && !seoCountry && !seoCity && !authorityPageId && !intentPage) {
       applyHomeMeta();
     }
-  }, [dataBase, dataCompare, selectedBase, selectedCompare, seoCountry, seoCity, authorityPageId, intentPage]);
+  }, [dataBase, dataCompare, selectedBase, selectedCompare, seoCountry, seoCity, authorityPageId, intentPage, compareSeoLinks]);
 
   // Related / nearby comparison links for compare pages
   useEffect(() => {
@@ -524,6 +655,25 @@ export default function App() {
         );
         if (!res.ok || cancelled) return;
         const data = await res.json();
+        // Prefer content-engine last_updated when this pair is in the SEO index
+        const path = window.location.pathname;
+        const m = path.match(/^\/compare\/([a-z0-9-]+)-vs-([a-z0-9-]+)/i);
+        if (m && !cancelled) {
+          try {
+            const slug = `${m[1]}-vs-${m[2]}`;
+            const cRes = await fetch(`/api/seo/compare/${encodeURIComponent(slug)}`);
+            if (cRes.ok) {
+              const cData = await cRes.json();
+              if (cData?.last_updated) data.last_updated = cData.last_updated;
+              if (Array.isArray(cData?.data_sources) && cData.data_sources.length) {
+                data.page_sources = cData.data_sources;
+              }
+              if (cData?.enrichment) data.enrichment = cData.enrichment;
+            }
+          } catch {
+            /* optional enrichment */
+          }
+        }
         if (!cancelled) setCompareSeoLinks(data);
       } catch {
         if (!cancelled) setCompareSeoLinks(null);
@@ -551,6 +701,19 @@ export default function App() {
       if (parseCategoryHubPath(path) || parseCountryGuidePath(path) || parseCityLandingPath(path)) {
         routeRestored.current = true;
         void loadIntentPage(path);
+        return;
+      }
+
+      if (path === '/blog') {
+        routeRestored.current = true;
+        await loadBlogIndex();
+        return;
+      }
+
+      const blogMatch = path.match(/^\/blog\/([a-z0-9-]+)$/i);
+      if (blogMatch) {
+        routeRestored.current = true;
+        await loadBlogArticle(blogMatch[1]);
         return;
       }
 
@@ -740,7 +903,14 @@ export default function App() {
             </button>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              type="button"
+              onClick={() => navigateSeo('/blog')}
+              className="text-[11px] sm:text-xs font-extrabold text-white/90 hover:text-white px-2.5 sm:px-3 py-1.5 rounded-xl hover:bg-white/10 border border-transparent hover:border-white/15 transition-all"
+            >
+              Blog
+            </button>
             <button
               onClick={toggleTheme}
               className="p-2 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-all hover:scale-105 border border-white/15 shadow-sm"
@@ -757,13 +927,15 @@ export default function App() {
         </div>
       </header>
 
-      <section className="relative bg-gradient-to-br from-brand-slate to-indigo-950 text-white overflow-hidden py-14 sm:py-20 px-4 sm:px-6 lg:px-8 no-print">
+      <section className="relative bg-gradient-to-br from-brand-slate to-indigo-950 text-white overflow-hidden py-14 sm:py-20 no-print">
         <div className="absolute top-0 left-1/4 w-96 h-96 bg-indigo-600 rounded-full mix-blend-screen filter blur-3xl opacity-10 pointer-events-none"></div>
         <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-teal-500 rounded-full mix-blend-screen filter blur-3xl opacity-10 pointer-events-none"></div>
         <div className="absolute top-10 right-10 w-24 h-24 border border-white/5 rounded-full pointer-events-none"></div>
         <div className="absolute bottom-12 left-10 w-32 h-32 border border-white/5 rounded-full pointer-events-none"></div>
 
-        <div className="max-w-4xl mx-auto text-center space-y-4 sm:space-y-6 relative z-10">
+        {/* Same horizontal container as <main> / blog (max-w-7xl) */}
+        <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-3xl text-center space-y-4 sm:space-y-6">
           <span className="text-xs font-bold text-teal-400 bg-teal-950/50 border border-teal-900 px-3 py-1.5 rounded-full uppercase tracking-widest inline-flex items-center gap-1">
             <Sparkles className="w-3.5 h-3.5" />
             <span>Interactive Living Index Calculator</span>
@@ -776,7 +948,7 @@ export default function App() {
           </p>
         </div>
 
-        <div className="max-w-4xl mx-auto mt-8 sm:mt-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl text-slate-800 dark:text-slate-200 relative z-20">
+        <div className="mt-8 sm:mt-12 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl text-slate-800 dark:text-slate-200 relative z-20">
           <div className="grid grid-cols-1 md:grid-cols-11 items-center gap-4">
             
             <div className="md:col-span-5 space-y-1.5 relative" ref={baseRef}>
@@ -991,6 +1163,7 @@ export default function App() {
             </button>
           </div>
         </div>
+        </div>
       </section>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 relative z-30">
@@ -1022,6 +1195,14 @@ export default function App() {
             <div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg"></div>
             <div className="h-80 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg"></div>
           </div>
+        ) : blogIndex ? (
+          <Suspense fallback={<div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg" />}>
+            <BlogIndexPage onNavigate={navigateSeo} />
+          </Suspense>
+        ) : blogArticle ? (
+          <Suspense fallback={<div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg" />}>
+            <BlogArticlePage article={blogArticle} related={blogRelated} onNavigate={navigateSeo} />
+          </Suspense>
         ) : authorityPageId ? (
           <Suspense fallback={<div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg" />}>
             <AuthorityPage doc={getAuthorityPage(authorityPageId)!} onNavigate={navigateSeo} />
@@ -1031,13 +1212,17 @@ export default function App() {
             <IntentLandingPage data={intentPage} onNavigate={navigateSeo} />
           </Suspense>
         ) : seoCountry ? (
-          <Suspense fallback={<div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg" />}>
-            <CountryPage data={seoCountry} onNavigate={navigateSeo} onCompare={openCompareSlug} />
-          </Suspense>
+          <SoftErrorBoundary>
+            <Suspense fallback={<div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg" />}>
+              <CountryPage data={seoCountry} onNavigate={navigateSeo} onCompare={openCompareSlug} />
+            </Suspense>
+          </SoftErrorBoundary>
         ) : seoCity ? (
-          <Suspense fallback={<div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg" />}>
-            <CityPage data={seoCity} onNavigate={navigateSeo} onCompare={openCompareSlug} />
-          </Suspense>
+          <SoftErrorBoundary>
+            <Suspense fallback={<div className="h-44 bg-slate-100 dark:bg-slate-800 rounded-3xl shimmer-bg" />}>
+              <CityPage data={seoCity} onNavigate={navigateSeo} onCompare={openCompareSlug} />
+            </Suspense>
+          </SoftErrorBoundary>
         ) : (
           <>
             {recentSearches.length > 0 && !isComparing && (
@@ -1137,6 +1322,8 @@ export default function App() {
               <SummaryDashboard dataBase={dataBase} dataCompare={dataCompare} onNavigate={navigateSeo} />
             </div>
 
+            <ComparisonDecisionPanel dataBase={dataBase} dataCompare={dataCompare} />
+
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
               <div className="lg:col-span-12 print-card">
                 <IndexChart dataBase={dataBase} dataCompare={dataCompare} />
@@ -1153,7 +1340,7 @@ export default function App() {
                   </div>
                   <div>
                     <h3 className="text-base sm:text-lg font-bold font-display text-slate-900 dark:text-white">AI Mobility & Affinity Assessment</h3>
-                    <p className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold">Smart deep narrative insights powered by Gemini 3.5 Flash</p>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold">Smart deep narrative insights powered by Groq</p>
                   </div>
                 </div>
 
@@ -1272,13 +1459,135 @@ export default function App() {
               </div>
             </section>
 
-            {compareSeoLinks && (compareSeoLinks.related.length > 0 || compareSeoLinks.nearby.length > 0) && (
+            <SoftErrorBoundary fallback={null}>
+            <Suspense fallback={null}>
+              <CompareContentSections
+                input={{
+                  cityA: cityAName,
+                  cityB: cityBName,
+                  a: {
+                    city: cityAName,
+                    currency: dataBase.currency,
+                    symbol: dataBase.symbol,
+                    cpi: dataBase.indices.cpi_index,
+                    rent_index: dataBase.indices.rent_index,
+                    groceries_index: dataBase.indices.groceries_index,
+                    restaurant_index: dataBase.indices.restaurant_price_index,
+                    purchasing_power: dataBase.indices.local_purchasing_power_index,
+                    rent_1br: dataBase.prices?.find((p) => p.item_name === 'Apartment (1 bedroom) in City Centre')?.average_price,
+                    salary: dataBase.prices?.find((p) => p.item_name === 'Average Monthly Net Salary (After Tax)')?.average_price,
+                    transport: dataBase.prices?.find((p) => p.item_name === 'One-way Ticket (Local Transport)')?.average_price,
+                    utilities: dataBase.prices?.find((p) => p.item_name === 'Basic (Electricity, Heating, Cooling, Water, Garbage) for 85m2 Apartment')?.average_price,
+                  },
+                  b: {
+                    city: cityBName,
+                    currency: dataCompare.currency,
+                    symbol: dataCompare.symbol,
+                    cpi: dataCompare.indices.cpi_index,
+                    rent_index: dataCompare.indices.rent_index,
+                    groceries_index: dataCompare.indices.groceries_index,
+                    restaurant_index: dataCompare.indices.restaurant_price_index,
+                    purchasing_power: dataCompare.indices.local_purchasing_power_index,
+                    rent_1br: dataCompare.prices?.find((p) => p.item_name === 'Apartment (1 bedroom) in City Centre')?.average_price,
+                    salary: dataCompare.prices?.find((p) => p.item_name === 'Average Monthly Net Salary (After Tax)')?.average_price,
+                    transport: dataCompare.prices?.find((p) => p.item_name === 'One-way Ticket (Local Transport)')?.average_price,
+                    utilities: dataCompare.prices?.find((p) => p.item_name === 'Basic (Electricity, Heating, Cooling, Water, Garbage) for 85m2 Apartment')?.average_price,
+                  },
+                  enrichment: compareSeoLinks?.enrichment,
+                  cityPages: compareSeoLinks?.city_pages,
+                  countryPages: compareSeoLinks?.country_pages,
+                }}
+                lastUpdated={compareSeoLinks?.last_updated}
+                relatedLinks={[
+                  ...(compareSeoLinks?.city_pages || []).map((p) => ({ label: p.label, href: p.href })),
+                  ...(compareSeoLinks?.country_pages || []).map((p) => ({ label: p.label, href: p.href })),
+                  ...(compareSeoLinks?.related || []).slice(0, 6).map((p) => ({
+                    label: p.label,
+                    href: `/compare/${p.slug}`,
+                  })),
+                ]}
+                onNavigate={navigateSeo}
+              />
+            </Suspense>
+            </SoftErrorBoundary>
+
+            <PageTrustBlock
+              lastUpdated={compareSeoLinks?.last_updated}
+              pageSources={
+                compareSeoLinks?.page_sources?.length
+                  ? compareSeoLinks.page_sources
+                  : ([dataBase.data_source, dataCompare.data_source].filter(Boolean) as string[])
+              }
+              onNavigate={navigateSeo}
+            />
+
+            {compareSeoLinks &&
+              (compareSeoLinks.related.length > 0 ||
+                compareSeoLinks.nearby.length > 0 ||
+                (compareSeoLinks.city_pages?.length ?? 0) > 0 ||
+                (compareSeoLinks.country_pages?.length ?? 0) > 0 ||
+                (compareSeoLinks.cheaper_alternatives?.length ?? 0) > 0 ||
+                (compareSeoLinks.expensive_alternatives?.length ?? 0) > 0) && (
               <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xs mt-6 no-print">
+                {(compareSeoLinks.city_pages?.length ?? 0) > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">City pages</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {compareSeoLinks.city_pages!.map((p) => (
+                        <button
+                          key={p.href}
+                          type="button"
+                          onClick={() => navigateSeo(p.href)}
+                          className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3 py-3 rounded-xl cursor-pointer text-center truncate"
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(compareSeoLinks.country_pages?.length ?? 0) > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Country pages</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {compareSeoLinks.country_pages!.map((p) => (
+                        <button
+                          key={p.href}
+                          type="button"
+                          onClick={() => navigateSeo(p.href)}
+                          className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3 py-3 rounded-xl cursor-pointer text-center truncate"
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {compareSeoLinks.related.length > 0 && (
                   <div className="space-y-3">
-                    <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Related comparisons</h4>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <h4 className="text-base font-semibold text-slate-900 dark:text-white">Related comparisons</h4>
+                    <div className="flex flex-wrap gap-2.5">
                       {compareSeoLinks.related.map((p) => (
+                        <a
+                          key={p.slug}
+                          href={`/compare/${p.slug}`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            openCompareSlug(p.slug);
+                          }}
+                          className="inline-flex max-w-full items-center rounded-full border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:border-teal-500/40 dark:hover:bg-teal-500/10"
+                        >
+                          <span className="line-clamp-2 text-left">{p.label}</span>
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {compareSeoLinks.nearby.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Nearby city comparisons</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                      {compareSeoLinks.nearby.map((p) => (
                         <button
                           key={p.slug}
                           type="button"
@@ -1291,13 +1600,30 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                {compareSeoLinks.nearby.length > 0 && (
+                {(compareSeoLinks.cheaper_alternatives?.length ?? 0) > 0 && (
                   <div className="space-y-3">
-                    <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Nearby comparisons</h4>
+                    <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Cheaper alternatives</h4>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                      {compareSeoLinks.nearby.map((p) => (
+                      {compareSeoLinks.cheaper_alternatives!.map((p) => (
                         <button
-                          key={p.slug}
+                          key={`cheap-${p.slug}`}
+                          type="button"
+                          onClick={() => openCompareSlug(p.slug)}
+                          className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3 py-3 rounded-xl cursor-pointer text-center truncate"
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {(compareSeoLinks.expensive_alternatives?.length ?? 0) > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">More expensive alternatives</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                      {compareSeoLinks.expensive_alternatives!.map((p) => (
+                        <button
+                          key={`exp-${p.slug}`}
                           type="button"
                           onClick={() => openCompareSlug(p.slug)}
                           className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 px-3 py-3 rounded-xl cursor-pointer text-center truncate"
@@ -1322,114 +1648,19 @@ export default function App() {
               <Compass className="w-12 h-12 text-indigo-500 mx-auto animate-spin" style={{ animationDuration: '6s' }} />
               <h3 className="text-lg font-bold text-slate-800 dark:text-white font-display">Select City Comparison</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed font-medium">
-                Use the searchable dropdown inputs above to choose your base city and comparison city, then press **Compare Cities** to compile indices, raw pricing charts, and smart summaries.
+                Use the searchable dropdown inputs above to choose your base city and comparison city, then press Compare Cities to compile indices, raw pricing charts, and smart summaries.
               </p>
             </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xs">
-              <article className="prose prose-slate dark:prose-invert max-w-none space-y-4">
-                <h3 className="text-lg font-extrabold font-display text-slate-800 dark:text-white">
-                  Global Cost of Living Comparison & City Comparison Tool
-                </h3>
-                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-                  Welcome to the ultimate <strong>city comparison tool</strong> for calculating and comparing costs worldwide. 
-                  Whether you are planning a relocation, traveling abroad, or assessing global wages, understanding the 
-                  complexities of a <strong>cost of living comparison</strong> is crucial. Local prices, taxes, and household costs 
-                  vary drastically from one region to another, making a reliable index calculator an indispensable resource.
-                </p>
-                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-                  Our comprehensive database aggregates critical factors including housing rents, supermarket grocery budgets, 
-                  utility fees, and restaurant pricing indices. This allows you to evaluate your true household purchasing power. 
-                  When choosing the <strong>best cities to live</strong>, looking solely at nominal salaries can be deceptive. A high-salary 
-                  city with excessive renting costs can often leave you with less disposable income than a low-cost city with 
-                  balanced consumer prices. 
-                </p>
-                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-                  Our comparison engine utilizes normalized indexing modeled relative to baseline costs in New York City, 
-                  ensuring a stable relative ratio. To explore external data methodologies, we suggest consulting verified authoritative resources 
-                  such as the <a href="https://en.wikipedia.org/wiki/Cost_of_living" target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline font-bold">Wikipedia Cost of Living Guide</a> or 
-                  reviewing crowdsourced indexes directly on the <a href="https://www.numbeo.com" target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline font-bold">Wikipedia Numbeo Database</a>. 
-                  Start planning your international move or holiday budget with confidence by selecting any city pair above.
-                </p>
-              </article>
-
-              <div className="border-t border-slate-150 dark:border-slate-800/80 pt-6 space-y-4">
-                <h4 className="text-[10px] font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                  <Globe className="w-4 h-4 text-indigo-500" />
-                  <span>Explore by Country</span>
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {catalogCountries.map((c) => (
-                    <button
-                      key={c.slug}
-                      type="button"
-                      onClick={() => navigateSeo(`/country/${c.slug}`)}
-                      className="text-[11px] font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-xl cursor-pointer"
-                    >
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="border-t border-slate-150 dark:border-slate-800/80 pt-6 space-y-4">
-                <h4 className="text-[10px] font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                  <TrendingUp className="w-4 h-4 text-emerald-500" />
-                  <span>Popular City Comparisons</span>
-                </h4>
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold">
-                  Quickly jump into our highest-volume, pre-rendered programmatic comparison pages:
-                </p>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                  {[
-                    { from: "New York", to: "London", slug: "new-york-vs-london" },
-                    { from: "London", to: "Tokyo", slug: "london-vs-tokyo" },
-                    { from: "Paris", to: "Berlin", slug: "paris-vs-berlin" },
-                    { from: "Sydney", to: "Singapore", slug: "sydney-vs-singapore" },
-                    { from: "Mumbai", to: "Delhi", slug: "mumbai-vs-delhi" },
-                    { from: "Toronto", to: "Vancouver", slug: "toronto-vs-vancouver" },
-                    { from: "San Francisco", to: "Dubai", slug: "san-francisco-vs-dubai" },
-                    { from: "Zurich", to: "Dublin", slug: "zurich-vs-dublin" }
-                  ].map((pair) => (
-                    <a
-                      key={pair.slug}
-                      href={`/compare/${pair.slug}`}
-                      onClick={async (e) => {
-                        e.preventDefault();
-                        window.history.pushState({}, '', `/compare/${pair.slug}`);
-                        
-                        const slugA = slugify(pair.from);
-                        const slugB = slugify(pair.to);
-                        try {
-                          const [resA, resB] = await Promise.all([
-                            fetch(`/api/cities?slug=${encodeURIComponent(slugA)}`),
-                            fetch(`/api/cities?slug=${encodeURIComponent(slugB)}`),
-                          ]);
-                          const dataA = await resA.json();
-                          const dataB = await resB.json();
-                          const fCity = (dataA.cities || [])[0] as CityOption | undefined;
-                          const tCity = (dataB.cities || [])[0] as CityOption | undefined;
-                          if (fCity && tCity) {
-                            const queryA = formatCityLabel(fCity);
-                            const queryB = formatCityLabel(tCity);
-                            setBaseCityQuery(queryA);
-                            setCompareCityQuery(queryB);
-                            handleCompare(queryA, queryB);
-                            return;
-                          }
-                        } catch (err) {
-                          console.error('Popular pair resolve failed:', err);
-                        }
-                        handleCompare(pair.from, pair.to);
-                      }}
-                      className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/20 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-850 px-3.5 py-3 rounded-xl transition-all text-center truncate block hover-lift"
-                    >
-                      {pair.from} vs {pair.to}
-                    </a>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <SoftErrorBoundary>
+              <Suspense fallback={<div className="py-8 text-center text-sm text-slate-500">Loading guides…</div>}>
+                <HomepageSeoContent
+                  onNavigate={navigateSeo}
+                  onCompareSlug={(slug) => void openCompareSlug(slug)}
+                  fallbackCountries={catalogCountries}
+                />
+              </Suspense>
+            </SoftErrorBoundary>
           </div>
         )}
           </>
@@ -1437,25 +1668,16 @@ export default function App() {
 
       </main>
 
-      <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-brand-slate py-12 mt-16 text-center text-[11px] text-slate-400 dark:text-slate-500 font-bold space-y-1.5 no-print">
-        <div className="max-w-4xl mx-auto px-4 mb-6">
-          <AdUnit slotId="1234567893" minHeight="90px" className="shadow-xs border-slate-100 dark:border-slate-800/80" />
-        </div>
-        <nav className="flex flex-wrap justify-center gap-x-3 gap-y-2 max-w-3xl mx-auto px-4 pb-3" aria-label="Authority links">
-          {AUTHORITY_FOOTER_LINKS.map((l) => (
-            <button
-              key={l.href}
-              type="button"
-              onClick={() => navigateSeo(l.href)}
-              className="hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer"
-            >
-              {l.label}
-            </button>
-          ))}
-        </nav>
-        <p className="tracking-wide">Cost-of-Living Comparison Tool • Crafted with Premium Engineering</p>
-        <p>© 2026 Cost-of-Living Comparison Tool • Built with ❤️</p>
-      </footer>
+      <SiteFooter
+        onNavigate={navigateSeo}
+        adSlot={
+          <AdUnit
+            slotId="1234567893"
+            minHeight="90px"
+            className="shadow-xs border-slate-100 dark:border-slate-800/80"
+          />
+        }
+      />
 
       <ConsentBanner />
     </div>

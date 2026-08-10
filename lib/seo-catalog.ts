@@ -144,11 +144,16 @@ export interface CountryPageData {
   expensive: Array<{ city: string; slug: string; rent: number; cpi: number }>;
   cities: Array<{ city: string; state?: string; slug: string; population?: number; cpi: number; rent: number }>;
   top_comparisons: Array<{ slug: string; label: string }>;
+  /** Cities that appear most often in indexable comparisons for this country. */
+  most_compared_cities: Array<{ city: string; slug: string; state?: string; compare_count: number }>;
   related_countries: Array<{ slug: string; name: string }>;
   faqs: Array<{ q: string; a: string }>;
   summary: string;
   canonical: string;
   seo_description?: string;
+  /** Content-engine meta.last_updated (ISO date). */
+  last_updated?: string;
+  content_version?: string;
 }
 
 export interface CityPageData {
@@ -180,6 +185,8 @@ export interface CityPageData {
   restaurant_meal: number;
   nearby: Array<{ city: string; slug: string; state?: string }>;
   related_comparisons: Array<{ slug: string; label: string }>;
+  /** Same-country cities with closest CPI (excludes self + nearby). */
+  similar_cost_cities: Array<{ city: string; slug: string; state?: string; cpi: number }>;
   faqs: Array<{ q: string; a: string }>;
   summary: string;
   canonical: string;
@@ -188,6 +195,10 @@ export interface CityPageData {
   confidence_label: string;
   timezone: string;
   seo_description?: string;
+  /** Content-engine meta.last_updated (ISO date). */
+  last_updated?: string;
+  content_version?: string;
+  estimation_note?: string | null;
   /** Unique long-form SEO sections (public content, not quality scores). */
   sections?: CitySeoSections;
   pros?: string[];
@@ -218,38 +229,252 @@ const COUNTRY_TIMEZONES: Record<string, string> = {
   EG: 'Africa/Cairo',
 };
 
-export function buildCompareSeoLinks(cityAName: string, cityBName: string): {
-  related: Array<{ slug: string; label: string }>;
-  nearby: Array<{ slug: string; label: string }>;
-  enrichment?: CompareSeoEnrichment;
-} {
-  const a = cityAName.split(',')[0].trim().toLowerCase();
-  const b = cityBName.split(',')[0].trim().toLowerCase();
-  const all = listIndexableComparisons();
-  const related = all
-    .filter((p) => {
-      const pa = p.cityA.toLowerCase();
-      const pb = p.cityB.toLowerCase();
-      return (pa === a || pb === a || pa === b || pb === b) &&
-        !((pa === a && pb === b) || (pa === b && pb === a));
-    })
-    .slice(0, 8)
-    .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
+export type CompareSeoLinkItem = { slug: string; label: string };
 
-  const nearby = all
-    .filter((p) => !related.some((r) => r.slug === p.slug))
-    .filter((p) => {
-      const pa = p.cityA.toLowerCase();
-      const pb = p.cityB.toLowerCase();
-      return !((pa === a && pb === b) || (pa === b && pb === a));
-    })
-    .slice(0, 6)
+export type CompareSeoHubLink = { slug: string; label: string; href: string };
+
+export interface CompareSeoLinksPayload {
+  related: CompareSeoLinkItem[];
+  nearby: CompareSeoLinkItem[];
+  city_pages: CompareSeoHubLink[];
+  country_pages: CompareSeoHubLink[];
+  cheaper_alternatives: CompareSeoLinkItem[];
+  expensive_alternatives: CompareSeoLinkItem[];
+  enrichment?: CompareSeoEnrichment;
+}
+
+function shortCityName(name: string): string {
+  return name.split(',')[0].trim().toLowerCase();
+}
+
+function findEligibleCityByName(name: string): EligibleCity | null {
+  const n = shortCityName(name);
+  if (!n) return null;
+  const cities = listIndexableCities();
+  return (
+    cities.find((c) => c.city.toLowerCase() === n) ||
+    cities.find((c) => shortCityName(c.label || '') === n) ||
+    null
+  );
+}
+
+function compInvolvesSlug(
+  p: { pageSlugA: string; pageSlugB: string; cityA: string; cityB: string },
+  rec: EligibleCity | null,
+  name: string
+): boolean {
+  const n = shortCityName(name);
+  if (rec && (p.pageSlugA === rec.pageSlug || p.pageSlugB === rec.pageSlug)) return true;
+  return p.cityA.toLowerCase() === n || p.cityB.toLowerCase() === n;
+}
+
+function takeUniqueLinks(
+  items: CompareSeoLinkItem[],
+  limit: number,
+  used: Set<string>
+): CompareSeoLinkItem[] {
+  const out: CompareSeoLinkItem[] = [];
+  for (const it of items) {
+    if (!it.slug || used.has(it.slug)) continue;
+    used.add(it.slug);
+    out.push(it);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * Internal linking graph for a comparison pair.
+ * related = same-city comps; nearby = comps with geo-nearby peers when possible;
+ * cheaper/expensive = comps with lower/higher-CPI peer cities from the catalog.
+ */
+export function buildCompareSeoLinks(cityAName: string, cityBName: string): CompareSeoLinksPayload {
+  const aName = shortCityName(cityAName);
+  const bName = shortCityName(cityBName);
+  const recA = findEligibleCityByName(cityAName);
+  const recB = findEligibleCityByName(cityBName);
+  const all = listIndexableComparisons();
+
+  const selfSlugs = new Set(
+    all
+      .filter((p) => {
+        const pa = p.cityA.toLowerCase();
+        const pb = p.cityB.toLowerCase();
+        return (pa === aName && pb === bName) || (pa === bName && pb === aName);
+      })
+      .map((p) => p.slug)
+  );
+  if (recA && recB) {
+    for (const p of all) {
+      if (
+        (p.pageSlugA === recA.pageSlug && p.pageSlugB === recB.pageSlug) ||
+        (p.pageSlugA === recB.pageSlug && p.pageSlugB === recA.pageSlug)
+      ) {
+        selfSlugs.add(p.slug);
+      }
+    }
+  }
+
+  const used = new Set<string>(selfSlugs);
+
+  const relatedPool = all
+    .filter((p) => !selfSlugs.has(p.slug))
+    .filter(
+      (p) =>
+        compInvolvesSlug(p, recA, cityAName) || compInvolvesSlug(p, recB, cityBName)
+    )
     .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
+  const related = takeUniqueLinks(relatedPool, 10, used);
+
+  // Nearby city comparisons: peers in same country (prefer same state)
+  const peerSlugs = new Set<string>();
+  const collectPeers = (rec: EligibleCity | null) => {
+    if (!rec) return;
+    findCountryCities(rec.countryCode)
+      .filter((c) => c.pageSlug !== rec.pageSlug)
+      .sort((x, y) => {
+        const stateBoost = (x.state === rec.state ? 10 : 0) - (y.state === rec.state ? 10 : 0);
+        if (stateBoost !== 0) return stateBoost > 0 ? -1 : 1;
+        return y.scores.eligibility - x.scores.eligibility;
+      })
+      .slice(0, 10)
+      .forEach((c) => peerSlugs.add(c.pageSlug));
+  };
+  collectPeers(recA);
+  collectPeers(recB);
+
+  const nearbyPool = all
+    .filter((p) => !used.has(p.slug))
+    .filter((p) => {
+      const touchesAB =
+        compInvolvesSlug(p, recA, cityAName) || compInvolvesSlug(p, recB, cityBName);
+      if (!touchesAB) return false;
+      return peerSlugs.has(p.pageSlugA) || peerSlugs.has(p.pageSlugB);
+    })
+    .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
+  let nearby = takeUniqueLinks(nearbyPool, 8, used);
+  // Fallback: high-score comps not yet used (keeps old behavior when geo peers missing)
+  if (nearby.length < 4) {
+    const fallback = all
+      .filter((p) => !used.has(p.slug) && !selfSlugs.has(p.slug))
+      .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
+    nearby = [...nearby, ...takeUniqueLinks(fallback, 8 - nearby.length, used)];
+  }
+
+  // CPI for A/B + peer candidates (bounded lookups)
+  const cpiA = recA ? metricsFor(recA).cpi : 0;
+  const cpiB = recB ? metricsFor(recB).cpi : 0;
+  const pairMaxCpi = Math.max(cpiA || 0, cpiB || 0);
+  const pairMinCpi = Math.min(
+    cpiA > 0 ? cpiA : Number.POSITIVE_INFINITY,
+    cpiB > 0 ? cpiB : Number.POSITIVE_INFINITY
+  );
+
+  const peerRecs: EligibleCity[] = [];
+  for (const slug of peerSlugs) {
+    const r = findCityBySlug(slug);
+    if (r) peerRecs.push(r);
+  }
+  // Also pull a few high-eligibility same-country peers beyond nearby for cost alts
+  for (const rec of [recA, recB]) {
+    if (!rec) continue;
+    for (const c of findCountryCities(rec.countryCode)
+      .filter((x) => x.pageSlug !== rec.pageSlug && !peerSlugs.has(x.pageSlug))
+      .sort((x, y) => y.scores.eligibility - x.scores.eligibility)
+      .slice(0, 6)) {
+      peerRecs.push(c);
+    }
+  }
+
+  const peerCpi = new Map<string, number>();
+  for (const p of peerRecs.slice(0, 16)) {
+    const cpi = metricsFor(p).cpi;
+    if (cpi > 0) peerCpi.set(p.pageSlug, cpi);
+  }
+
+  const cheaperPeerSlugs = new Set(
+    [...peerCpi.entries()].filter(([, cpi]) => cpi < pairMinCpi).map(([slug]) => slug)
+  );
+  const expensivePeerSlugs = new Set(
+    [...peerCpi.entries()].filter(([, cpi]) => cpi > pairMaxCpi).map(([slug]) => slug)
+  );
+
+  const cheaperPool = all
+    .filter((p) => !used.has(p.slug))
+    .filter((p) => {
+      const touchesAB =
+        compInvolvesSlug(p, recA, cityAName) || compInvolvesSlug(p, recB, cityBName);
+      if (!touchesAB) return false;
+      return cheaperPeerSlugs.has(p.pageSlugA) || cheaperPeerSlugs.has(p.pageSlugB);
+    })
+    .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
+  const cheaper_alternatives = takeUniqueLinks(cheaperPool, 8, used);
+
+  const expensivePool = all
+    .filter((p) => !used.has(p.slug))
+    .filter((p) => {
+      const touchesAB =
+        compInvolvesSlug(p, recA, cityAName) || compInvolvesSlug(p, recB, cityBName);
+      if (!touchesAB) return false;
+      return expensivePeerSlugs.has(p.pageSlugA) || expensivePeerSlugs.has(p.pageSlugB);
+    })
+    .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
+  const expensive_alternatives = takeUniqueLinks(expensivePool, 8, used);
+
+  const city_pages: CompareSeoHubLink[] = [];
+  if (recA) {
+    city_pages.push({
+      slug: recA.pageSlug,
+      label: recA.state ? `${recA.city}, ${recA.state}` : recA.city,
+      href: `/city/${recA.pageSlug}`,
+    });
+  }
+  if (recB && (!recA || recB.pageSlug !== recA.pageSlug)) {
+    city_pages.push({
+      slug: recB.pageSlug,
+      label: recB.state ? `${recB.city}, ${recB.state}` : recB.city,
+      href: `/city/${recB.pageSlug}`,
+    });
+  }
+
+  const country_pages: CompareSeoHubLink[] = [];
+  const countrySeen = new Set<string>();
+  for (const rec of [recA, recB]) {
+    if (!rec) continue;
+    const cslug = countrySlugFromCode(rec.countryCode);
+    if (!cslug || countrySeen.has(cslug)) continue;
+    countrySeen.add(cslug);
+    country_pages.push({
+      slug: cslug,
+      label: rec.country,
+      href: `/country/${cslug}`,
+    });
+  }
+
+  const enrichOpts = (() => {
+    if (!recA && !recB) return undefined;
+    const idx = (rec: EligibleCity | null) =>
+      rec ? resolveCityCostOfLivingSync(cityQueryLabel(rec)).indices : null;
+    const idxA = idx(recA);
+    const idxB = idx(recB);
+    return {
+      cpiA: idxA?.cpi_index,
+      cpiB: idxB?.cpi_index,
+      rentA: idxA?.rent_index,
+      rentB: idxB?.rent_index,
+      ppA: idxA?.local_purchasing_power_index,
+      ppB: idxB?.local_purchasing_power_index,
+    };
+  })();
 
   return {
     related,
     nearby,
-    enrichment: buildCompareEnrichment(cityAName, cityBName),
+    city_pages,
+    country_pages,
+    cheaper_alternatives,
+    expensive_alternatives,
+    enrichment: buildCompareEnrichment(cityAName, cityBName, enrichOpts),
   };
 }
 
@@ -328,11 +553,14 @@ export function buildCountryPageData(slugOrCode: string): CountryPageData | null
       expensive: [],
       cities: [],
       top_comparisons: [],
+      most_compared_cities: [],
       related_countries: related.map((c) => ({ slug: c.slug, name: c.name })),
       faqs: doc.faqs,
       summary: doc.summary,
       canonical: `https://citycost.online/country/${slug}`,
       seo_description: doc.seo_description,
+      last_updated: doc.meta.last_updated?.slice(0, 10) || doc.meta.generated_at?.slice(0, 10),
+      content_version: doc.meta.content_version,
     };
   }
 
@@ -357,6 +585,37 @@ export function buildCountryPageData(slugOrCode: string): CountryPageData | null
     .filter((p) => cities.some((c) => c.city === p.cityA) || cities.some((c) => c.city === p.cityB))
     .slice(0, 12)
     .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
+
+  const compareCount = new Map<string, number>();
+  const cityBySlug = new Map(cities.map((c) => [c.pageSlug, c]));
+  const cityByName = new Map<string, EligibleCity>();
+  for (const c of cities) {
+    if (!cityByName.has(c.city)) cityByName.set(c.city, c);
+  }
+  for (const p of listIndexableComparisons()) {
+    const hits = new Set<string>();
+    if (cityBySlug.has(p.pageSlugA)) hits.add(p.pageSlugA);
+    if (cityBySlug.has(p.pageSlugB)) hits.add(p.pageSlugB);
+    const byA = cityByName.get(p.cityA);
+    const byB = cityByName.get(p.cityB);
+    if (byA) hits.add(byA.pageSlug);
+    if (byB) hits.add(byB.pageSlug);
+    for (const pageSlug of hits) {
+      compareCount.set(pageSlug, (compareCount.get(pageSlug) || 0) + 1);
+    }
+  }
+  const most_compared_cities = [...compareCount.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([pageSlug, compare_count]) => {
+      const c = cityBySlug.get(pageSlug)!;
+      return {
+        city: c.city,
+        slug: c.pageSlug,
+        state: c.state,
+        compare_count,
+      };
+    });
 
   const related = listIndexableCountries()
     .filter((c) => c.code !== code)
@@ -429,11 +688,14 @@ export function buildCountryPageData(slugOrCode: string): CountryPageData | null
         };
       }),
     top_comparisons: comps,
+    most_compared_cities,
     related_countries: related.map((c) => ({ slug: c.slug, name: c.name })),
     faqs: doc.faqs,
     summary: doc.summary,
     canonical: `https://citycost.online/country/${slug}`,
     seo_description: doc.seo_description,
+    last_updated: doc.meta.last_updated?.slice(0, 10) || doc.meta.generated_at?.slice(0, 10),
+    content_version: doc.meta.content_version,
   };
 }
 
@@ -454,12 +716,42 @@ export function buildCityPageData(slug: string): CityPageData | null {
       if (stateBoost !== 0) return stateBoost > 0 ? -1 : 1;
       return b.scores.eligibility - a.scores.eligibility;
     })
-    .slice(0, 8)
+    .slice(0, 10)
     .map((c) => ({ city: c.city, slug: c.pageSlug, state: c.state }));
 
+  const nearbySlugSet = new Set(nearby.map((n) => n.slug));
+  const selfCpi = resolved.indices.cpi_index;
+
+  // Similar-cost peers: same country, closest CPI, exclude self + nearby (bounded lookups)
+  const similarCandidates = findCountryCities(rec.countryCode)
+    .filter((c) => c.pageSlug !== rec.pageSlug && !nearbySlugSet.has(c.pageSlug))
+    .sort((a, b) => b.scores.eligibility - a.scores.eligibility)
+    .slice(0, 14);
+  const similar_cost_cities = similarCandidates
+    .map((c) => {
+      const cpi = metricsFor(c).cpi;
+      return {
+        city: c.city,
+        slug: c.pageSlug,
+        state: c.state,
+        cpi,
+        gap: Math.abs(cpi - selfCpi),
+      };
+    })
+    .filter((c) => c.cpi > 0)
+    .sort((a, b) => a.gap - b.gap)
+    .slice(0, 8)
+    .map(({ city, slug, state, cpi }) => ({ city, slug, state, cpi }));
+
   const related_comparisons = listIndexableComparisons()
-    .filter((p) => p.cityA === rec.city || p.cityB === rec.city || p.pageSlugA === rec.pageSlug || p.pageSlugB === rec.pageSlug)
-    .slice(0, 10)
+    .filter(
+      (p) =>
+        p.cityA === rec.city ||
+        p.cityB === rec.city ||
+        p.pageSlugA === rec.pageSlug ||
+        p.pageSlugB === rec.pageSlug
+    )
+    .slice(0, 12)
     .map((p) => ({ slug: p.slug, label: `${p.cityA} vs ${p.cityB}` }));
 
   const rent = byName('Apartment (1 bedroom) in City Centre');
@@ -522,6 +814,7 @@ export function buildCityPageData(slug: string): CityPageData | null {
     restaurant_meal,
     nearby,
     related_comparisons,
+    similar_cost_cities,
     faqs: doc.faqs,
     summary: doc.summary,
     canonical: `https://citycost.online/city/${rec.pageSlug}`,
@@ -530,6 +823,9 @@ export function buildCityPageData(slug: string): CityPageData | null {
     confidence_label: resolved.confidence_label,
     timezone: rec.timezone || COUNTRY_TIMEZONES[rec.countryCode] || 'Local timezone (varies by region)',
     seo_description: doc.seo_description,
+    last_updated: doc.meta.last_updated?.slice(0, 10) || doc.meta.generated_at?.slice(0, 10),
+    content_version: doc.meta.content_version,
+    estimation_note: resolved.estimation_note || null,
     sections,
     pros: sections.pros,
     cons: sections.cons,
@@ -546,24 +842,92 @@ export function buildComparePageData(slug: string): {
   enrichment: CompareSeoEnrichment;
   related: Array<{ slug: string; label: string }>;
   nearby: Array<{ slug: string; label: string }>;
+  city_pages: CompareSeoHubLink[];
+  country_pages: CompareSeoHubLink[];
+  cheaper_alternatives: Array<{ slug: string; label: string }>;
+  expensive_alternatives: Array<{ slug: string; label: string }>;
+  last_updated?: string;
+  content_version?: string;
+  data_sources?: string[];
 } | null {
   const hit = listIndexableComparisons().find((p) => p.slug === slug);
   if (!hit) return null;
 
   const cityARec = findCityBySlug(hit.pageSlugA);
   const cityBRec = findCityBySlug(hit.pageSlugB);
-  let cpiA = 50, cpiB = 50, rentA = 50, rentB = 50, ppA = 50, ppB = 50;
+  let cpiA = 50,
+    cpiB = 50,
+    rentA = 50,
+    rentB = 50,
+    ppA = 50,
+    ppB = 50,
+    groceriesA = 0,
+    groceriesB = 0,
+    restaurantsA = 0,
+    restaurantsB = 0;
+  let exchangeRateA: number | undefined;
+  let exchangeRateB: number | undefined;
+  let rent1brA: number | null = null;
+  let rent1brB: number | null = null;
+  let utilitiesA: number | null = null;
+  let utilitiesB: number | null = null;
+  let internetA: number | null = null;
+  let internetB: number | null = null;
+  let transportA: number | null = null;
+  let transportB: number | null = null;
+  let salaryA: number | null = null;
+  let salaryB: number | null = null;
+  let currencyA: string | undefined;
+  let currencyB: string | undefined;
+  let sourceLabelA: string | undefined;
+  let sourceLabelB: string | undefined;
+
+  const byName = (
+    prices: Array<{ item_name: string; average_price: number }>,
+    name: string
+  ): number | null => {
+    const hitP = prices.find((p) => p.item_name === name);
+    if (!hitP || !Number.isFinite(hitP.average_price) || hitP.average_price <= 0) return null;
+    return hitP.average_price;
+  };
+
   if (cityARec) {
     const r = resolveCityCostOfLivingSync(cityQueryLabel(cityARec));
     cpiA = r.indices.cpi_index;
     rentA = r.indices.rent_index;
     ppA = r.indices.local_purchasing_power_index;
+    groceriesA = r.indices.groceries_index;
+    restaurantsA = r.indices.restaurant_price_index;
+    exchangeRateA = r.exchange_rate;
+    currencyA = r.currency;
+    sourceLabelA = r.data_source_label;
+    rent1brA = byName(r.prices, 'Apartment (1 bedroom) in City Centre');
+    utilitiesA = byName(
+      r.prices,
+      'Basic (Electricity, Heating, Cooling, Water, Garbage) for 85m2 Apartment'
+    );
+    internetA = byName(r.prices, 'Internet (60 Mbps or More, Unlimited Data, Cable/ADSL)');
+    transportA = byName(r.prices, 'One-way Ticket (Local Transport)');
+    salaryA = byName(r.prices, 'Average Monthly Net Salary (After Tax)');
   }
   if (cityBRec) {
     const r = resolveCityCostOfLivingSync(cityQueryLabel(cityBRec));
     cpiB = r.indices.cpi_index;
     rentB = r.indices.rent_index;
     ppB = r.indices.local_purchasing_power_index;
+    groceriesB = r.indices.groceries_index;
+    restaurantsB = r.indices.restaurant_price_index;
+    exchangeRateB = r.exchange_rate;
+    currencyB = r.currency;
+    sourceLabelB = r.data_source_label;
+    rent1brB = byName(r.prices, 'Apartment (1 bedroom) in City Centre');
+    utilitiesB = byName(
+      r.prices,
+      'Basic (Electricity, Heating, Cooling, Water, Garbage) for 85m2 Apartment'
+    );
+    internetB = byName(r.prices, 'Internet (60 Mbps or More, Unlimited Data, Cable/ADSL)');
+    transportB = byName(r.prices, 'One-way Ticket (Local Transport)');
+    salaryB = byName(r.prices, 'Average Monthly Net Salary (After Tax)');
   }
 
   const doc = generateCompareContentSync({
@@ -582,6 +946,24 @@ export function buildComparePageData(slug: string): {
     rentB,
     ppA,
     ppB,
+    groceriesA,
+    groceriesB,
+    restaurantsA,
+    restaurantsB,
+    currencyA,
+    currencyB,
+    exchangeRateA,
+    exchangeRateB,
+    rent1brA,
+    rent1brB,
+    utilitiesA,
+    utilitiesB,
+    internetA,
+    internetB,
+    transportA,
+    transportB,
+    salaryA,
+    salaryB,
   });
 
   const links = buildCompareSeoLinks(hit.queryA, hit.queryB);
@@ -590,7 +972,9 @@ export function buildComparePageData(slug: string): {
   const enrichment: CompareSeoEnrichment = {
     executive_summary: e.executive_summary,
     winner_summary: e.executive_summary,
-    detailed_analysis: doc.blocks.find((b) => b.id === 'detailed_breakdown')?.paragraphs.join(' ') || e.decision_summary,
+    detailed_analysis:
+      doc.blocks.find((b) => b.id === 'detailed_breakdown')?.paragraphs.join(' ') ||
+      e.decision_summary,
     category_winners: e.category_winners,
     budget_comparison: e.monthly_savings,
     monthly_savings: e.monthly_savings,
@@ -610,14 +994,26 @@ export function buildComparePageData(slug: string): {
     cons: e.cons,
     faqs: doc.faqs,
     internal_link_hints: doc.links.map((l) => ({ label: l.label, href: l.href })),
+    overall_winner: e.overall_winner,
+    monthly_difference: e.monthly_difference,
+    biggest_difference: e.biggest_difference,
+    best_for: e.best_for,
+    key_takeaways: e.key_takeaways,
   };
 
-  recordQuality(buildPageQuality({
-    slug: hit.slug,
-    eligibility: 70,
-    contentParts: [e.executive_summary, e.decision_summary, ...doc.faqs.map((f) => f.q + f.a)],
-    hasStructuredSections: true,
-  }));
+  recordQuality(
+    buildPageQuality({
+      slug: hit.slug,
+      eligibility: 70,
+      contentParts: [
+        e.executive_summary,
+        e.decision_summary,
+        ...(e.key_takeaways || []),
+        ...doc.faqs.map((f) => f.q + f.a),
+      ],
+      hasStructuredSections: true,
+    })
+  );
 
   return {
     slug: hit.slug,
@@ -628,6 +1024,13 @@ export function buildComparePageData(slug: string): {
     enrichment,
     related: links.related,
     nearby: links.nearby,
+    city_pages: links.city_pages,
+    country_pages: links.country_pages,
+    cheaper_alternatives: links.cheaper_alternatives,
+    expensive_alternatives: links.expensive_alternatives,
+    last_updated: doc.meta.last_updated?.slice(0, 10) || doc.meta.generated_at?.slice(0, 10),
+    content_version: doc.meta.content_version,
+    data_sources: [sourceLabelA, sourceLabelB].filter(Boolean) as string[],
   };
 }
 

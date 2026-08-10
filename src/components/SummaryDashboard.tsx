@@ -216,6 +216,7 @@ export function SummaryDashboard({ dataBase, dataCompare, onNavigate }: SummaryD
                   sourceB: dataCompare.data_source,
                   confidenceA: dataBase.confidence_label,
                   confidenceB: dataCompare.confidence_label,
+                  // Omit when unknown — TrustStrip falls back to today; prefer real dates via PageTrustBlock
                 })}
                 onNavigate={onNavigate}
               />

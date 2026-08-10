@@ -109,14 +109,8 @@ For storing AI summary cache.
 ## Environment Variables
 ### Required New Variables
 ```env
-# MySQL Configuration
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=your_password
-MYSQL_DATABASE=citycost_global
-MYSQL_CONNECTION_LIMIT=10
-MYSQL_WAIT_FOR_CONNECTIONS=true
+# PostgreSQL (Neon)
+DATABASE_URL=postgresql://USER:PASSWORD@ep-xxxx.ap-southeast-1.aws.neon.tech/citycost?sslmode=require
 
 # Groq API
 GROQ_API_KEY=your_groq_api_key
@@ -124,7 +118,7 @@ GROQ_API_KEY=your_groq_api_key
 
 ### Backward Compatible (unchanged)
 ```env
-GEMINI_API_KEY=
+GROQ_API_KEY=
 NUMBEO_API_KEY=
 APP_URL=
 ALLOWED_ORIGINS=*

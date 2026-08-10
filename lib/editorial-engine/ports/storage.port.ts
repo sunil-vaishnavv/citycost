@@ -1,0 +1,1 @@
+export type { StoragePort } from '../types.js';
