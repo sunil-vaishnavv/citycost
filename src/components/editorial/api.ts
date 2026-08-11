@@ -191,6 +191,8 @@ export interface Article {
   updated_at: string;
   /** Admin-only generation diagnostics */
   generation_debug?: ArticleGenerationDebug;
+  /** manual | automatic — from API list/detail */
+  source?: 'manual' | 'automatic';
 }
 
 export interface ResearchPreview {

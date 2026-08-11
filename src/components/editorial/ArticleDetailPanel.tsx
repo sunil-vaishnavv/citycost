@@ -57,6 +57,7 @@ import {
 import AdvancedPanel from './wizard/AdvancedPanel';
 import WizardProgress from './wizard/WizardProgress';
 import PublishedContentEditor from './PublishedContentEditor';
+import ManualBlogEditor, { isManualArticle } from './ManualBlogEditor';
 import {
   FieldRow,
   RenderBlockBody,
@@ -188,14 +189,9 @@ export default function ArticleDetailPanel({
           return;
         }
         const passed = job.progress.passed === true;
-        const publishReady = job.progress.publish_ready === true;
         const detail = job.progress.result_message || '';
         if (passed) {
-          setMessage(
-            publishReady
-              ? detail || 'Fix Issues finished — article is Ready to Publish.'
-              : detail || 'Review passed — Ready to Publish (minor publish fixes may remain).'
-          );
+          setMessage(detail || 'Fix Issues finished — article is Ready to Publish.');
           setError('');
         } else {
           setMessage('');
@@ -578,6 +574,8 @@ export default function ArticleDetailPanel({
     forceStage,
   });
 
+  const manualArticle = isManualArticle(article);
+
   const seo = preview.seo_package;
   const links = preview.internal_links?.recommendations || [];
   const panel = preview.quality_panel;
@@ -668,7 +666,12 @@ export default function ArticleDetailPanel({
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <StatusPill status={preview.status} />
-              <Badge tone="sky">{workflow.stageLabel}</Badge>
+              {manualArticle ? (
+                <Badge tone="sky">Manual</Badge>
+              ) : (
+                <Badge tone="neutral">Automatic</Badge>
+              )}
+              {!manualArticle && <Badge tone="sky">{workflow.stageLabel}</Badge>}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -725,9 +728,11 @@ export default function ArticleDetailPanel({
             </div>
           </div>
         </div>
-        <div className="mt-4">
-          <WizardProgress steps={workflow.steps} />
-        </div>
+        {!manualArticle && (
+          <div className="mt-4">
+            <WizardProgress steps={workflow.steps} />
+          </div>
+        )}
       </div>
 
       {(message || error) && (
@@ -859,8 +864,51 @@ export default function ArticleDetailPanel({
 
       <div className="grid lg:grid-cols-[1fr_240px]">
         <div className="min-h-[420px] space-y-5 p-5">
-          {/* ONE step screen at a time */}
-          {workflow.stage === 'research' && (
+          {manualArticle && preview.status !== 'published' && (
+            <ManualBlogEditor
+              mode="edit"
+              articleId={articleId}
+              topicId={article.topic_id}
+              initial={{
+                seo_title: article.seo_title || '',
+                meta_title: article.meta_title || '',
+                meta_description: article.meta_description || '',
+                excerpt: article.excerpt || '',
+                slug: article.slug,
+                content_type: article.content_type,
+                blocks: preview.blocks,
+              }}
+              onSaved={() => {
+                setMessage('Draft saved');
+                void load();
+                onChanged?.();
+              }}
+              onPreview={() => setBlogPreviewOpen(true)}
+              onPublished={() => {
+                setMessage('Published successfully');
+                void load();
+                onChanged?.();
+              }}
+            />
+          )}
+
+          {manualArticle && preview.status === 'published' && contentEditOpen && (
+            <PublishedContentEditor
+              articleId={articleId}
+              preview={preview}
+              rawDraft={raw?.draft_json}
+              disabled={actionsLocked}
+              onSaved={(msg) => {
+                setMessage(msg);
+                setContentEditOpen(false);
+                void load();
+                onChanged?.();
+              }}
+              onCancel={() => setContentEditOpen(false)}
+            />
+          )}
+
+          {!manualArticle && workflow.stage === 'research' && (
             <StepShell
               emoji="🔍"
               title="Research"
@@ -890,7 +938,7 @@ export default function ArticleDetailPanel({
             </StepShell>
           )}
 
-          {workflow.stage === 'writing' && (
+          {!manualArticle && workflow.stage === 'writing' && (
             <StepShell
               emoji="✍️"
               title="Writing"
@@ -950,7 +998,7 @@ export default function ArticleDetailPanel({
             </StepShell>
           )}
 
-          {workflow.stage === 'seo' && (
+          {!manualArticle && workflow.stage === 'seo' && (
             <StepShell
               emoji="🎯"
               title="SEO & Internal Links"
@@ -1034,7 +1082,7 @@ export default function ArticleDetailPanel({
             </StepShell>
           )}
 
-          {workflow.stage === 'review' && (
+          {!manualArticle && workflow.stage === 'review' && (
             <StepShell
               emoji="✅"
               title="Review"
@@ -1185,7 +1233,7 @@ export default function ArticleDetailPanel({
             </StepShell>
           )}
 
-          {workflow.stage === 'ready' && (
+          {!manualArticle && workflow.stage === 'ready' && (
             <StepShell
               emoji="🚀"
               title="Ready to Publish"
@@ -1297,7 +1345,8 @@ export default function ArticleDetailPanel({
             </StepShell>
           )}
 
-          {workflow.stage === 'published' && (
+          {(!manualArticle && workflow.stage === 'published') ||
+          (manualArticle && preview.status === 'published' && !contentEditOpen) ? (
             <StepShell
               emoji="🌍"
               title="Published"
@@ -1371,7 +1420,7 @@ export default function ArticleDetailPanel({
                 </div>
               )}
             </StepShell>
-          )}
+          ) : null}
 
           <AdvancedPanel
             article={article}
@@ -1402,13 +1451,9 @@ export default function ArticleDetailPanel({
             value={
               workflow.needsManualReview
                 ? 'Needs Manual Review'
-                : !workflow.reviewPassed && workflow.showAutoFixBanner
+                : workflow.showAutoFixBanner
                   ? 'Needs Revision'
-                  : workflow.reviewPassed && workflow.publishReady
-                    ? 'Ready to Publish'
-                    : workflow.reviewPassed
-                      ? 'Review Passed'
-                      : preview.status
+                  : preview.status
             }
           />
           <Divider />

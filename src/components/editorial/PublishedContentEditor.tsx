@@ -44,6 +44,7 @@ export function markdownToBlocks(markdown: string): ArticleBlock[] {
   const blocks: ArticleBlock[] = [];
   let para: string[] = [];
   let listItems: string[] = [];
+  let listOrdered = false;
   let seq = 0;
   const nextId = () => `manual-${Date.now()}-${seq++}`;
 
@@ -56,6 +57,7 @@ export function markdownToBlocks(markdown: string): ArticleBlock[] {
     if (listItems.length) {
       blocks.push({ id: nextId(), type: 'list', content: [...listItems] });
       listItems = [];
+      listOrdered = false;
     }
   };
 
@@ -63,6 +65,8 @@ export function markdownToBlocks(markdown: string): ArticleBlock[] {
     const h2 = line.match(/^##\s+(.+)$/);
     const h3 = line.match(/^###\s+(.+)$/);
     const bullet = line.match(/^[-*]\s+(.+)$/);
+    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    const quote = line.match(/^>\s+(.+)$/);
     if (h2 || h3) {
       flushPara();
       flushList();
@@ -70,9 +74,24 @@ export function markdownToBlocks(markdown: string): ArticleBlock[] {
       if (title) {
         blocks.push({ id: nextId(), type: 'heading', heading: title, content: title });
       }
+    } else if (quote) {
+      flushPara();
+      flushList();
+      blocks.push({
+        id: nextId(),
+        type: 'tip',
+        heading: 'Note',
+        content: quote[1]!.trim(),
+      });
     } else if (bullet) {
       flushPara();
+      if (listOrdered && listItems.length) flushList();
       listItems.push(bullet[1]!.trim());
+    } else if (numbered) {
+      flushPara();
+      if (!listOrdered && listItems.length) flushList();
+      listOrdered = true;
+      listItems.push(numbered[1]!.trim());
     } else if (line.trim() === '') {
       flushPara();
       flushList();

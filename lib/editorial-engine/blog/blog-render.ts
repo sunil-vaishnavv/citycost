@@ -4,6 +4,7 @@
 
 import type { WriterDraftPayload, DraftBlock } from '../writer/draft-validate.js';
 import type { InternalLinkRecommendation } from '../seo/internal-links.js';
+import { isValidSiteHref } from './linkify-paths.js';
 import { blockContentText } from '../reviewer/text-utils.js';
 import { linkifyBarePathsInHtml } from './linkify-paths.js';
 
@@ -16,28 +17,55 @@ function renderInlineWithLinks(
   links: InternalLinkRecommendation[],
   used: Set<string>
 ): string {
-  let html = esc(text);
-  // Prefer longer anchors first
-  const ordered = [...links].sort((a, b) => b.anchor.length - a.anchor.length);
-  for (const link of ordered) {
-    if (used.has(link.target)) continue;
-    const anchor = link.anchor.trim();
-    if (anchor.length < 3) continue;
-    // Search in original text for case-preserving replace
-    const rawIdx = text.toLowerCase().indexOf(anchor.toLowerCase());
-    if (rawIdx === -1) continue;
-    const actual = text.slice(rawIdx, rawIdx + anchor.length);
-    const needle = esc(actual);
-    const pos = html.indexOf(needle);
-    if (pos === -1) continue;
-    const href = link.target.startsWith('http') ? link.target : link.target;
-    const a = `<a href="${esc(href)}" class="blog-inline-link">${needle}</a>`;
-    html = html.slice(0, pos) + a + html.slice(pos + needle.length);
-    used.add(link.target);
+  const mdRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const segments: Array<
+    { kind: 'text'; value: string } | { kind: 'link'; label: string; href: string }
+  > = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = mdRe.exec(text)) !== null) {
+    if (m.index > last) segments.push({ kind: 'text', value: text.slice(last, m.index) });
+    const label = m[1]!.trim();
+    const href = m[2]!.trim();
+    if (label && isValidSiteHref(href)) {
+      segments.push({ kind: 'link', label, href });
+      used.add(href);
+    } else {
+      segments.push({ kind: 'text', value: m[0]! });
+    }
+    last = m.index + m[0]!.length;
   }
-  // Convert leftover bare /city/... and authority paths into real links
-  html = linkifyBarePathsInHtml(html, esc);
-  return html;
+  if (last < text.length) segments.push({ kind: 'text', value: text.slice(last) });
+  if (!segments.length) segments.push({ kind: 'text', value: text });
+
+  const ordered = [...links].sort((a, b) => b.anchor.length - a.anchor.length);
+
+  const renderTextChunk = (chunk: string): string => {
+    let html = esc(chunk);
+    for (const link of ordered) {
+      if (used.has(link.target)) continue;
+      const anchor = link.anchor.trim();
+      if (anchor.length < 3) continue;
+      const rawIdx = chunk.toLowerCase().indexOf(anchor.toLowerCase());
+      if (rawIdx === -1) continue;
+      const actual = chunk.slice(rawIdx, rawIdx + anchor.length);
+      const needle = esc(actual);
+      const pos = html.indexOf(needle);
+      if (pos === -1) continue;
+      const a = `<a href="${esc(link.target)}" class="blog-inline-link">${needle}</a>`;
+      html = html.slice(0, pos) + a + html.slice(pos + needle.length);
+      used.add(link.target);
+    }
+    return linkifyBarePathsInHtml(html, esc);
+  };
+
+  return segments
+    .map((seg) =>
+      seg.kind === 'link'
+        ? `<a href="${esc(seg.href)}" class="blog-inline-link">${esc(seg.label)}</a>`
+        : renderTextChunk(seg.value)
+    )
+    .join('');
 }
 
 function renderFaq(

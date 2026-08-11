@@ -166,6 +166,7 @@ export function createEditorialRouter(): Router {
         ip: req.ip,
         userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
       });
+      console.log('[login] Created session, token hash:', token.slice(0, 16) + '...');
       setSessionCookie(res, token, expiresAt);
       return res.json({
         ok: true,
@@ -531,6 +532,30 @@ export function createEditorialRouter(): Router {
     const filters = parseTopicListFilters(req);
     const result = await listTopicIds(filters);
     return res.json(result);
+  });
+
+  router.post('/topics/manual', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const { createManualTopicService } = await import('./manual/manual-service.js');
+      const result = await createManualTopicService({
+        title: typeof body.title === 'string' ? body.title : '',
+        content_type: typeof body.content_type === 'string' ? body.content_type : 'guide',
+        cluster_id:
+          body.cluster_id != null && Number.isFinite(Number(body.cluster_id))
+            ? Number(body.cluster_id)
+            : null,
+        brief: typeof body.brief === 'string' ? body.brief : undefined,
+        city: typeof body.city === 'string' ? body.city : undefined,
+        country: typeof body.country === 'string' ? body.country : undefined,
+        comparison: typeof body.comparison === 'string' ? body.comparison : undefined,
+      });
+      const topic = await getTopicById(result.topic_id);
+      return res.status(201).json({ ok: true, ...result, topic });
+    } catch (err) {
+      console.error('editorial topics/manual error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Create manual topic failed' });
+    }
   });
 
   router.post('/topics/bulk', requireEditorialAuth, requireOrigin, async (req, res) => {
@@ -1037,6 +1062,9 @@ export function createEditorialRouter(): Router {
   router.get('/articles', requireEditorialAuth, async (req, res) => {
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    const sourceRaw = typeof req.query.source === 'string' ? req.query.source : undefined;
+    const source =
+      sourceRaw === 'manual' || sourceRaw === 'automatic' ? sourceRaw : undefined;
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 30;
     const offset = req.query.offset ? parseInt(String(req.query.offset), 10) : 0;
     // Persist-clean cert-batch markers left in article titles/slugs
@@ -1046,8 +1074,91 @@ export function createEditorialRouter(): Router {
     } catch (err) {
       console.warn('editorial articles cert scrub:', (err as Error).message);
     }
-    const result = await listArticles({ status, q, limit, offset });
-    return res.json(result);
+    const result = await listArticles({ status, q, source, limit, offset });
+    const { articleSource } = await import('./utils/article-origin.js');
+    const articles = result.articles.map((a) => ({
+      ...a,
+      source: articleSource(a),
+    }));
+    return res.json({ articles, total: result.total });
+  });
+
+  router.post('/articles/manual', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const { createManualArticleService } = await import('./manual/manual-service.js');
+      const blocks = Array.isArray(body.blocks) ? body.blocks : [];
+      const result = await createManualArticleService({
+        seo_title: typeof body.seo_title === 'string' ? body.seo_title : '',
+        meta_title: typeof body.meta_title === 'string' ? body.meta_title : undefined,
+        meta_description:
+          typeof body.meta_description === 'string' ? body.meta_description : '',
+        excerpt: typeof body.excerpt === 'string' ? body.excerpt : '',
+        slug: typeof body.slug === 'string' ? body.slug : undefined,
+        content_type: typeof body.content_type === 'string' ? body.content_type : undefined,
+        cluster_id:
+          body.cluster_id != null && Number.isFinite(Number(body.cluster_id))
+            ? Number(body.cluster_id)
+            : undefined,
+        topic_id:
+          body.topic_id != null && Number.isFinite(Number(body.topic_id))
+            ? Number(body.topic_id)
+            : undefined,
+        blocks,
+      });
+      return res.status(201).json({ ok: true, ...result });
+    } catch (err) {
+      console.error('editorial articles/manual error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Create manual article failed' });
+    }
+  });
+
+  router.post('/articles/manual/from-topic/:topicId', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const topicId = parseInt(req.params.topicId, 10);
+      if (!Number.isFinite(topicId)) return res.status(400).json({ error: 'Invalid topic id' });
+      const { createManualArticleFromTopic } = await import('./manual/manual-service.js');
+      const result = await createManualArticleFromTopic(topicId);
+      return res.status(201).json({ ok: true, ...result });
+    } catch (err) {
+      console.error('editorial articles/manual/from-topic error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Create manual article failed' });
+    }
+  });
+
+  router.put('/articles/:id/manual', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const { updateManualArticleService } = await import('./manual/manual-service.js');
+      const result = await updateManualArticleService(id, {
+        seo_title: typeof body.seo_title === 'string' ? body.seo_title : undefined,
+        meta_title: typeof body.meta_title === 'string' ? body.meta_title : undefined,
+        meta_description:
+          typeof body.meta_description === 'string' ? body.meta_description : undefined,
+        excerpt: typeof body.excerpt === 'string' ? body.excerpt : undefined,
+        slug: typeof body.slug === 'string' ? body.slug : undefined,
+        blocks: Array.isArray(body.blocks) ? body.blocks : undefined,
+      });
+      return res.json(result);
+    } catch (err) {
+      console.error('editorial articles/manual update error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Update failed' });
+    }
+  });
+
+  router.post('/articles/:id/prepare-manual-publish', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
+      const { prepareManualArticleForPublish } = await import('./manual/manual-service.js');
+      const result = await prepareManualArticleForPublish(id);
+      return res.status(result.ok ? 200 : 422).json(result);
+    } catch (err) {
+      console.error('editorial prepare-manual-publish error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Prepare failed' });
+    }
   });
 
   /** Strip cert-batch QA markers from unpublished article title/slug */
@@ -1114,7 +1225,10 @@ export function createEditorialRouter(): Router {
         fromLog?.research_pack_size_chars ?? (researchPack ? researchPack.length : null),
       prompt_size_chars: fromLog?.prompt_size_chars ?? null,
     };
-    return res.json({ article: { ...safe, generation_debug } });
+    const { articleSource } = await import('./utils/article-origin.js');
+    return res.json({
+      article: { ...safe, generation_debug, source: articleSource(article) },
+    });
   });
 
   router.get('/articles/:id/raw', requireEditorialAuth, async (req, res) => {

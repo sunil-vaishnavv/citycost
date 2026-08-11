@@ -336,7 +336,7 @@ export function sanitizeBlocks(blocks: DraftBlock[]): DraftBlock[] {
     // Drop tiny filler paragraphs — never drop protected intro/faq/summary/toc
     if (
       !isProtectedType &&
-      type === 'paragraph' &&
+      (type === 'paragraph' || type === 'intro' || type === 'summary') &&
       text.split(/\s+/).length < 12
     ) {
       continue;
@@ -634,5 +634,73 @@ export function validateWriterDraft(
     word_count,
     missing_h2,
     missing_elements: [...new Set(missing_elements)],
+  };
+}
+
+/** Relaxed validation for admin-written manual articles (no AI pipeline contract). */
+export function validateManualDraft(
+  draft: WriterDraftPayload,
+  opts?: { minWords?: number; maxWords?: number }
+): DraftValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const minWords = opts?.minWords ?? 50;
+  const maxWords = opts?.maxWords ?? 15000;
+
+  if (!draft || typeof draft !== 'object') {
+    return {
+      ok: false,
+      errors: ['Draft is not an object'],
+      warnings: [],
+      word_count: 0,
+      missing_h2: [],
+      missing_elements: ['draft'],
+    };
+  }
+
+  for (const key of ['seo_title', 'meta_title', 'meta_description', 'excerpt'] as const) {
+    if (!draft[key] || typeof draft[key] !== 'string' || !draft[key].trim()) {
+      errors.push(`Missing ${key}`);
+    }
+  }
+
+  const sanitized = { ...draft, blocks: sanitizeBlocks(draft.blocks || []) };
+  if (!sanitized.blocks.length) {
+    errors.push('Add at least one content block');
+  }
+
+  let hasContent = false;
+  for (const block of sanitized.blocks) {
+    if (!block?.id || typeof block.id !== 'string') {
+      errors.push('Block missing id');
+      continue;
+    }
+    if (!BLOCK_TYPES.has(block.type)) {
+      errors.push(`Invalid block type: ${block.type}`);
+      continue;
+    }
+    const text = blockText(block).trim();
+    const heading = (block.heading || '').trim();
+    if (text || heading) hasContent = true;
+  }
+  if (!hasContent && sanitized.blocks.length) {
+    errors.push('Content blocks are empty');
+  }
+
+  const word_count = countDraftWords(sanitized);
+  if (word_count < minWords) {
+    errors.push(`Word count ${word_count} below minimum ${minWords}`);
+  }
+  if (word_count > maxWords) {
+    errors.push(`Word count ${word_count} above maximum ${maxWords}`);
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    word_count,
+    missing_h2: [],
+    missing_elements: [],
   };
 }

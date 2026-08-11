@@ -5,9 +5,10 @@
 
 import { getArticleById } from '../db/articles-repo.js';
 import { getLatestQualityReport } from '../db/quality-reports-repo.js';
+import { isManualArticle } from '../utils/article-origin.js';
 import type { QualityReport } from '../reviewer/quality-report.js';
 import type { WriterDraftPayload } from '../writer/draft-validate.js';
-import { validateWriterDraft } from '../writer/draft-validate.js';
+import { validateManualDraft, validateWriterDraft } from '../writer/draft-validate.js';
 import { getSettings } from '../db/settings-repo.js';
 import type { SeoPackage } from '../seo/seo-package.js';
 import type { EditorialJsonLd } from '../seo/json-ld.js';
@@ -87,14 +88,17 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
 
   const settings = await getSettings();
   const draft = asDraft(article);
-  const contentValidation = validateWriterDraft(draft, {
-    min: settings.article_length_min,
-    max: settings.article_length_max,
-  });
+  const manual = isManualArticle(article);
+  const contentValidation = manual
+    ? validateManualDraft(draft, { minWords: 50, maxWords: settings.article_length_max })
+    : validateWriterDraft(draft, {
+        min: settings.article_length_min,
+        max: settings.article_length_max,
+      });
 
   const latest = await getLatestQualityReport(articleId);
   const findings = (latest?.findings_json || null) as QualityReport | null;
-  const qualityPassed = Boolean(latest?.passed && findings?.passed);
+  const qualityPassed = manual ? true : Boolean(latest?.passed && findings?.passed);
 
   const seo_package = article.seo_package_json as SeoPackage | null;
   const seo_validation = article.seo_validation_json as SeoValidationResult | null;
@@ -105,7 +109,9 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
   const bodyLinkCount = countBodyInternalLinks(draft);
   const packageLinkCount = internal_links?.count ?? internal_links?.recommendations?.length ?? 0;
   // Publish requires in-body links (quality contract) AND enough SEO package recommendations.
-  const linksPassed = bodyLinkCount >= 1 && packageLinkCount >= settings.internal_link_min;
+  const linksPassed = manual
+    ? true
+    : bodyLinkCount >= 1 && packageLinkCount >= settings.internal_link_min;
   const hasJsonLd = Boolean(
     json_ld &&
       Array.isArray(json_ld['@graph']) &&
@@ -126,7 +132,7 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
     null;
   const confidenceAction = resolveConfidencePublishAction(confidence_level, settings);
   const confidenceMsg = confidencePublishMessage(confidence_level, confidenceAction);
-  const confidenceOk = !confidence_level || confidenceReadinessPassed(confidenceAction);
+  const confidenceOk = manual ? true : !confidence_level || confidenceReadinessPassed(confidenceAction);
 
   const checks: PublishCheckItem[] = [
     {
@@ -137,17 +143,19 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
     },
     {
       key: 'quality_review',
-      label: 'Quality Review',
+      label: manual ? 'Quality Review (optional for manual)' : 'Quality Review',
       passed: qualityPassed,
-      detail: qualityPassed
-        ? `Score ${latest?.score ?? findings?.overall_score ?? '—'}`
-        : !latest
-          ? 'No quality review yet — click Review'
-          : (findings?.failure_reasons?.length
-              ? findings.failure_reasons.slice(0, 3).join(' · ')
-              : `Latest review failed (score ${latest.score ?? findings?.overall_score ?? '—'}${
-                  findings?.threshold != null ? ` / ${findings.threshold}` : ''
-                })`),
+      detail: manual
+        ? 'Skipped for manual articles — run Review optionally'
+        : qualityPassed
+          ? `Score ${latest?.score ?? findings?.overall_score ?? '—'}`
+          : !latest
+            ? 'No quality review yet — click Review'
+            : (findings?.failure_reasons?.length
+                ? findings.failure_reasons.slice(0, 3).join(' · ')
+                : `Latest review failed (score ${latest.score ?? findings?.overall_score ?? '—'}${
+                    findings?.threshold != null ? ` / ${findings.threshold}` : ''
+                  })`),
     },
     {
       key: 'seo_package',

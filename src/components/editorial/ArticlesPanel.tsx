@@ -6,6 +6,7 @@ import {
   Eye,
   FileText,
   Loader2,
+  PenLine,
   Plus,
   Search,
   Sparkles,
@@ -13,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, ApiError, qs, type Article, type ResearchPreview, type Topic } from './api';
+import ManualBlogEditor, { isManualArticle } from './ManualBlogEditor';
 import { useEditorialJobsOptional } from './jobs/JobsProvider';
 import { formatRelativeTime, topicCanGenerateDraft } from './topics/topicMeta';
 import {
@@ -66,11 +68,13 @@ export default function ArticlesPanel() {
 
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('');
+  const [source, setSource] = useState('');
   const [offset, setOffset] = useState(0);
   const limit = 24;
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showGenerate, setShowGenerate] = useState(false);
+  const [showManualCreate, setShowManualCreate] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Article | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -79,7 +83,13 @@ export default function ArticlesPanel() {
     setLoading(true);
     setError('');
     try {
-      const query = qs({ q: q.trim() || undefined, status: status || undefined, limit, offset });
+      const query = qs({
+        q: q.trim() || undefined,
+        status: status || undefined,
+        source: source || undefined,
+        limit,
+        offset,
+      });
       const result = await api.get<{ articles: Article[]; total: number }>(
         `/api/editorial/articles${query}`
       );
@@ -90,13 +100,13 @@ export default function ArticlesPanel() {
     } finally {
       setLoading(false);
     }
-  }, [q, status, offset]);
+  }, [q, status, source, offset]);
 
   useEffect(() => {
     const t = setTimeout(() => void load(), 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, status, offset]);
+  }, [q, status, source, offset]);
 
   useEffect(() => {
     const openStored = () => {
@@ -155,7 +165,7 @@ export default function ArticlesPanel() {
     );
   }
 
-  const hasFilters = Boolean(q || status);
+  const hasFilters = Boolean(q || status || source);
 
   return (
     <div className="space-y-6">
@@ -164,9 +174,19 @@ export default function ArticlesPanel() {
         title="Articles"
         description="Drafts flowing through research, writing, review, SEO, and publishing."
         actions={
-          <Button size="sm" variant="accent" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setShowGenerate(true)}>
-            New Draft
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              icon={<PenLine className="h-3.5 w-3.5" />}
+              onClick={() => setShowManualCreate(true)}
+            >
+              Create Manual Blog
+            </Button>
+            <Button size="sm" variant="accent" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setShowGenerate(true)}>
+              New Draft
+            </Button>
+          </div>
         }
       />
 
@@ -190,7 +210,7 @@ export default function ArticlesPanel() {
               setOffset(0);
               setStatus(e.target.value);
             }}
-            className="sm:w-48"
+            className="sm:w-44"
           >
             <option value="">All statuses</option>
             {STATUS_OPTIONS.map((s) => (
@@ -198,6 +218,18 @@ export default function ArticlesPanel() {
                 {s.replace(/_/g, ' ')}
               </option>
             ))}
+          </Select>
+          <Select
+            value={source}
+            onChange={(e) => {
+              setOffset(0);
+              setSource(e.target.value);
+            }}
+            className="sm:w-40"
+          >
+            <option value="">All sources</option>
+            <option value="manual">Manual</option>
+            <option value="automatic">Automatic</option>
           </Select>
         </div>
       </GlassPanel>
@@ -252,6 +284,33 @@ export default function ArticlesPanel() {
                 Next
               </Button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showManualCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4 backdrop-blur-sm">
+          <div className="editorial-fade-in max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-slate-950 sm:p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">Create Manual Blog</h2>
+              <button
+                type="button"
+                onClick={() => setShowManualCreate(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <ManualBlogEditor
+              mode="create"
+              onCancel={() => setShowManualCreate(false)}
+              onSaved={(articleId) => {
+                setShowManualCreate(false);
+                void load();
+                setSelectedId(articleId);
+              }}
+            />
           </div>
         </div>
       )}
@@ -350,6 +409,15 @@ function ArticleCard({
             <Badge tone="neutral" className="!rounded-md !px-2 !py-0.5 !text-[10px]">
               {formatContentType(a.content_type)}
             </Badge>
+            {(a.source === 'manual' || isManualArticle(a)) ? (
+              <Badge tone="sky" className="!rounded-md !px-2 !py-0.5 !text-[10px]">
+                Manual
+              </Badge>
+            ) : (
+              <Badge tone="neutral" className="!rounded-md !px-2 !py-0.5 !text-[10px] opacity-70">
+                Automatic
+              </Badge>
+            )}
             {a.quality_score != null && (
               <Badge tone={qualityTone(a.quality_score)} className="!rounded-md !px-2 !py-0.5 !text-[10px] tabular-nums">
                 Quality {a.quality_score}

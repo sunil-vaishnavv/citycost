@@ -1,4 +1,5 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import crypto from 'crypto';
 import { pool } from '../../db.js';
 import type { EditorialTopic, ScoreBreakdown, TopicStatus } from '../types.js';
 import { TOPIC_TERMINAL_LOCK_STATUSES } from '../types.js';
@@ -349,31 +350,76 @@ export async function getTopicById(id: number): Promise<EditorialTopic | null> {
  * All previously researched topic hashes/titles (any status), plus article titles.
  * Used so strategy never re-researches the same topic (including rejected/archived).
  */
+/**
+ * All previously researched topic hashes/titles (including generation history).
+ * Used so strategy never re-researches the same topic.
+ * Includes:
+ * - currently existing topics (any status)
+ * - topics that were deleted but are in generation_history
+ * - published/approved/draft/review articles
+ */
 export async function listPublishedTopicSignals(): Promise<{
   hashes: string[];
   titles: string[];
 }> {
   if (!pool) return { hashes: [], titles: [] };
+
+  // Fetch current topics (any status, including rejected/archived but not deleted)
   const [topicRows] = await pool.execute<RowDataPacket[]>(
     `SELECT topic_hash, title FROM editorial_topics`
   );
+
+  // Fetch generation history — topics that were ever generated (even if deleted later)
+  const [historyRows] = await pool.execute<RowDataPacket[]>(
+    `SELECT topic_hash, topic_title AS title FROM editorial_topic_generation_history`
+  );
+
+  // Fetch article titles (for deduplication)
   let articleRows: RowDataPacket[] = [];
   try {
-    const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT slug, seo_title, meta_title FROM editorial_articles
-       WHERE status IN ('published', 'approved', 'draft', 'review')`
-    );
+    const [rows] = await pool.execute<RowDataPacket[]>(`SELECT slug, seo_title, meta_title FROM editorial_articles WHERE status IN ('published', 'approved', 'draft', 'review')`);
     articleRows = rows;
   } catch {
-    // Articles table not migrated yet (Phase 3A foundation only).
+    // Articles table not migrated yet
     articleRows = [];
   }
-  const hashes = topicRows.map((r) => String(r.topic_hash));
+
+  // Combine:
+  // - topic hashes from editorial_topics (current)
+  // - topic hashes from generation_history (historical, including deleted)
+  const hashes = [
+    ...topicRows.map((r) => String(r.topic_hash)),
+    ...historyRows.map((r) => String(r.topic_hash)),
+  ];
+
   const titles = [
     ...topicRows.map((r) => String(r.title)),
+    ...historyRows.map((r) => String(r.title)),
     ...articleRows.map((r) => String(r.seo_title || r.meta_title || r.slug || '')),
   ].filter(Boolean);
+
   return { hashes, titles };
+}
+
+/**
+ * Record a topic hash in generation history when it's upserted.
+ * This ensures that even if the topic is later deleted, it cannot be regenerated.
+ */
+export async function recordTopicGenerationHistory(input: {
+  topic_hash: string;
+  topic_title: string;
+  status_at_generation: string;
+}): Promise<void> {
+  if (!pool) return;
+  const { topic_hash, topic_title, status_at_generation } = input;
+  // Use ON CONFLICT DO NOTHING for PostgreSQL compatibility
+  await pool.execute(
+    `INSERT INTO editorial_topic_generation_history
+     (topic_hash, topic_title, status_at_generation)
+     VALUES ($1, $2, $3)
+     ON CONFLICT DO NOTHING`,
+    [topic_hash, topic_title, status_at_generation]
+  );
 }
 
 /** True when this topic_hash was already researched / stored. */
@@ -421,6 +467,14 @@ export async function upsertScoredTopic(input: {
 }): Promise<number> {
   if (!pool) throw new Error('Database unavailable');
   const title = cleanEditorialTitle(input.title);
+  
+  // Record generation history BEFORE any DB operation to ensure it's always captured
+  await recordTopicGenerationHistory({
+    topic_hash: input.topic_hash,
+    topic_title: title,
+    status_at_generation: input.status,
+  });
+  
   const [existing] = await pool.execute<RowDataPacket[]>(
     `SELECT id, status, locked FROM editorial_topics WHERE topic_hash = $1 LIMIT 1`,
     [input.topic_hash]
@@ -538,4 +592,52 @@ export async function approveTopic(id: number): Promise<EditorialTopic | null> {
   }
   await setTopicStatus(id, 'approved');
   return getTopicById(id);
+}
+
+/** Admin-entered topic — never touches automatic topic generation. */
+export async function createManualTopic(input: {
+  title: string;
+  content_type: string;
+  cluster_id?: number | null;
+  brief?: string;
+  city?: string;
+  country?: string;
+  comparison?: string;
+  status?: 'candidate' | 'approved';
+}): Promise<number> {
+  if (!pool) throw new Error('Database unavailable');
+  const title = cleanEditorialTitle(input.title);
+  if (!title.trim()) throw new Error('Topic title is required');
+
+  const topic_hash = crypto
+    .createHash('sha256')
+    .update(`manual|${title}|${input.content_type}|${Date.now()}`)
+    .digest('hex');
+
+  const source_refs: Record<string, unknown> = { origin: 'manual' };
+  if (input.brief?.trim()) source_refs.brief = input.brief.trim();
+  if (input.city?.trim()) source_refs.city = input.city.trim();
+  if (input.country?.trim()) source_refs.country = input.country.trim();
+  if (input.comparison?.trim()) source_refs.comparison = input.comparison.trim();
+
+  const rationale = ['Manually created by admin'];
+  const status = input.status === 'candidate' ? 'candidate' : 'approved';
+
+  const [result] = await pool.execute<ResultSetHeader>(
+    `INSERT INTO editorial_topics
+      (title, cluster_id, content_type, source_refs_json, priority_score, status, topic_hash, rationale_json)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb)
+     RETURNING id`,
+    [
+      title,
+      input.cluster_id ?? null,
+      input.content_type,
+      JSON.stringify(source_refs),
+      100,
+      status,
+      topic_hash,
+      JSON.stringify(rationale),
+    ]
+  );
+  return result.insertId;
 }

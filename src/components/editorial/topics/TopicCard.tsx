@@ -124,6 +124,7 @@ export const TopicCard = memo(function TopicCard({
   onCopyKeyword,
   onShiftClick,
   onContext,
+  onCreateManualBlog,
 }: {
   topic: Topic;
   clusterMap: Map<number, Cluster>;
@@ -138,6 +139,7 @@ export const TopicCard = memo(function TopicCard({
   onCopyKeyword: (topic: Topic) => void;
   onShiftClick: (id: number) => void;
   onContext: (topic: Topic, x: number, y: number) => void;
+  onCreateManualBlog?: (topic: Topic) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -172,6 +174,17 @@ export const TopicCard = memo(function TopicCard({
   }, [menuOpen]);
 
   const extraBadges: Array<{ key: string; node: ReactNode; tip?: string }> = [];
+  if (topic.source_refs_json?.origin === 'manual') {
+    extraBadges.push({
+      key: 'manual',
+      tip: 'Manually created topic',
+      node: (
+        <Badge tone="sky" className="!rounded-md !px-1.5 !py-0.5 !text-[10px]">
+          Manual
+        </Badge>
+      ),
+    });
+  }
   if (city) {
     extraBadges.push({
       key: 'city',
@@ -314,6 +327,16 @@ export const TopicCard = memo(function TopicCard({
                   />
                   {menuOpen && (
                     <div className="absolute right-0 top-full z-40 mt-1 min-w-[180px] overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl dark:border-white/10 dark:bg-slate-950">
+                      {onCreateManualBlog && (
+                        <MenuItem
+                          label="Create Manual Blog"
+                          icon={<FlaskConical className="h-3.5 w-3.5 opacity-50" />}
+                          onClick={() => {
+                            setMenuOpen(false);
+                            onCreateManualBlog(topic);
+                          }}
+                        />
+                      )}
                       {canSchedule && (
                         <MenuItem
                           label="Schedule"

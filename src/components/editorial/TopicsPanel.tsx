@@ -8,6 +8,7 @@ import {
   Filter,
   ListTree,
   MoreHorizontal,
+  PenLine,
   Search,
   Settings2,
   SlidersHorizontal,
@@ -41,6 +42,8 @@ import {
 } from './ui';
 import { SearchableSelect } from './topics/SearchableSelect';
 import { TopicCard } from './topics/TopicCard';
+import ManualTopicDialog from './ManualTopicDialog';
+import { isManualTopic } from './ManualBlogEditor';
 import {
   SCORER_VERSION_LABEL,
   STATUS_META,
@@ -225,6 +228,7 @@ export default function TopicsPanel({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [automationOpen, setAutomationOpen] = useState(false);
+  const [showManualTopic, setShowManualTopic] = useState(false);
   const [bulkMoreOpen, setBulkMoreOpen] = useState(false);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -684,6 +688,30 @@ export default function TopicsPanel({
     }
   };
 
+  const createManualBlogFromTopic = async (topic: Topic) => {
+    setBusyId(topic.id);
+    setError('');
+    setMessage('');
+    try {
+      const result = await api.post<{ article_id: number; slug: string }>(
+        `/api/editorial/articles/manual/from-topic/${topic.id}`
+      );
+      setMessage(`Manual blog created — open Articles to edit (/blog/${result.slug} when published)`);
+      try {
+        sessionStorage.setItem('editorial_open_article_id', String(result.article_id));
+      } catch {
+        /* ignore */
+      }
+      window.dispatchEvent(
+        new CustomEvent('editorial:open-article', { detail: { articleId: result.article_id } })
+      );
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Create manual blog failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const generateTopics = async () => {
     setGenerating(true);
     setMessage('');
@@ -1002,6 +1030,14 @@ export default function TopicsPanel({
             </div>
             <Button
               size="sm"
+              variant="outline"
+              icon={<PenLine className="h-3.5 w-3.5" />}
+              onClick={() => setShowManualTopic(true)}
+            >
+              Create Topic Manually
+            </Button>
+            <Button
+              size="sm"
               variant="accent"
               icon={<Wand2 className="h-3.5 w-3.5" />}
               loading={generating}
@@ -1274,6 +1310,9 @@ export default function TopicsPanel({
                       onDelete={deleteOne}
                       onCopyKeyword={(t) => void copyKeyword(t)}
                       onContext={(t, x, y) => setContextMenu({ topic: t, x, y })}
+                      onCreateManualBlog={
+                        isManualTopic(topic) ? (t) => void createManualBlogFromTopic(t) : undefined
+                      }
                     />
                   </div>
                 );
@@ -1676,6 +1715,17 @@ export default function TopicsPanel({
           busy={bulkBusy}
           onCancel={() => setAutoApproveOpen(false)}
           onConfirm={() => void runAutoApprove()}
+        />
+      )}
+
+      {showManualTopic && (
+        <ManualTopicDialog
+          onClose={() => setShowManualTopic(false)}
+          onCreated={() => {
+            setMessage('Manual topic created');
+            void load();
+            void loadStats();
+          }}
         />
       )}
 

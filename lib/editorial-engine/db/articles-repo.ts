@@ -2,7 +2,11 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { pool } from '../../db.js';
 import { getSettings } from './settings-repo.js';
 import type { ResearchPack } from '../writer/research-engine.js';
-import { validateWriterDraft, type WriterDraftPayload } from '../writer/draft-validate.js';
+import {
+  validateManualDraft,
+  validateWriterDraft,
+  type WriterDraftPayload,
+} from '../writer/draft-validate.js';
 
 export interface EditorialArticleRow {
   id: number;
@@ -118,6 +122,7 @@ const SELECT_COLS = `id, slug, content_type, cluster_id, topic_id, status, seo_t
 export async function listArticles(opts: {
   status?: string;
   q?: string;
+  source?: 'manual' | 'automatic';
   limit?: number;
   offset?: number;
 }): Promise<{ articles: EditorialArticleRow[]; total: number }> {
@@ -135,6 +140,13 @@ export async function listArticles(opts: {
     where.push(`(seo_title LIKE $${i} OR slug LIKE $${i + 1} OR excerpt LIKE $${i + 2})`);
     params.push(`%${opts.q}%`, `%${opts.q}%`, `%${opts.q}%`);
     i += 3;
+  }
+  if (opts.source === 'manual') {
+    where.push(`prompt_hash = $${i++}`);
+    params.push('manual');
+  } else if (opts.source === 'automatic') {
+    where.push(`(prompt_hash IS NULL OR prompt_hash <> $${i++})`);
+    params.push('manual');
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const [countRows] = await pool.execute<RowDataPacket[]>(
@@ -267,6 +279,60 @@ export async function insertDraftArticle(input: {
       input.generation_time_ms,
       input.tokens_in ?? null,
       input.tokens_out ?? null,
+      input.reading_time_minutes,
+      input.word_count,
+    ]
+  );
+  return result.insertId;
+}
+
+/** Admin-written article — no AI generation fields, relaxed validation. */
+export async function insertManualDraftArticle(input: {
+  slug: string;
+  content_type: string;
+  cluster_id: number | null;
+  topic_id: number | null;
+  draft: WriterDraftPayload;
+  word_count: number;
+  reading_time_minutes: number;
+}): Promise<number> {
+  if (!pool) throw new Error('Database unavailable');
+  const settings = await getSettings();
+  const validation = validateManualDraft(input.draft, {
+    minWords: 50,
+    maxWords: settings.article_length_max,
+  });
+  if (!validation.ok) {
+    throw new Error(
+      `Manual draft validation failed: ${validation.errors.join('; ')}`
+    );
+  }
+  const researchPack = { origin: 'manual' as const };
+  const [result] = await pool.execute<ResultSetHeader>(
+    `INSERT INTO editorial_articles
+      (slug, content_type, cluster_id, topic_id, status,
+       seo_title, meta_title, meta_description, excerpt,
+       blocks_json, research_pack_json, draft_json, raw_ai_response,
+       prompt_version, prompt_hash, ai_model, temperature, top_p,
+       generation_time_ms, tokens_in, tokens_out, reading_time_minutes, word_count)
+     VALUES ($1, $2, $3, $4, 'draft',
+       $5, $6, $7, $8,
+       $9::jsonb, $10::jsonb, $11::jsonb, NULL,
+       0, 'manual', 'manual', NULL, NULL,
+       NULL, NULL, NULL, $12, $13)
+     RETURNING id`,
+    [
+      input.slug,
+      input.content_type,
+      input.cluster_id,
+      input.topic_id,
+      input.draft.seo_title,
+      input.draft.meta_title,
+      input.draft.meta_description,
+      input.draft.excerpt,
+      JSON.stringify(input.draft.blocks),
+      JSON.stringify(researchPack),
+      JSON.stringify(input.draft),
       input.reading_time_minutes,
       input.word_count,
     ]
