@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { SHOW_ADS } from '../config';
+import { ADSENSE_CLIENT, SHOW_ADS } from '../config';
+import { loadAdSenseScript } from '../lib/adsense-loader';
 
 interface AdUnitProps {
   slotId: string;
@@ -14,15 +15,21 @@ export function AdUnit({ slotId, minHeight = '100px', className = '' }: AdUnitPr
     // Do not push to adsbygoogle when ads are disabled
     if (!SHOW_ADS) return;
     if (initiated.current) return;
-    
-    try {
-      if (typeof window !== 'undefined') {
+
+    let cancelled = false;
+    void loadAdSenseScript()
+      .then(() => {
+        if (cancelled || initiated.current) return;
         ((window as any).adsbygoogle = (window as any).adsbygoogle || []).push({});
         initiated.current = true;
-      }
-    } catch (error) {
-      console.warn('AdSense tag push ignored or blocked:', error);
-    }
+      })
+      .catch((error) => {
+        console.warn('AdSense tag push ignored or blocked:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [slotId]);
 
   // When ads are disabled: render nothing — no container, no space, no scripts
@@ -44,7 +51,7 @@ export function AdUnit({ slotId, minHeight = '100px', className = '' }: AdUnitPr
           <ins
           className="adsbygoogle"
           style={{ display: 'block', width: '100%', minHeight }}
-          data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+          data-ad-client={ADSENSE_CLIENT}
           data-ad-slot={slotId}
           data-ad-format="auto"
           data-full-width-responsive="true"
