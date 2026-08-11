@@ -105,8 +105,19 @@ if (process.env.NODE_ENV === 'production') {
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         imgSrc: ["'self'", "data:", "https://pagead2.googlesyndication.com", "https://tpc.googlesyndication.com"],
-        connectSrc: ["'self'", "https://www.google-analytics.com", "https://region1.google-analytics.com"],
-        frameSrc: ["'self'", "https://tpc.googlesyndication.com"],
+        connectSrc: [
+          "'self'",
+          "https://www.google-analytics.com",
+          "https://region1.google-analytics.com",
+          // AdSense ad traffic quality / measurement (blocked without this)
+          "https://ep1.adtrafficquality.google",
+        ],
+        frameSrc: [
+          "'self'",
+          "https://tpc.googlesyndication.com",
+          // AdSense ad iframes served via DoubleClick
+          "https://googleads.g.doubleclick.net",
+        ],
       },
     },
     crossOriginEmbedderPolicy: false,
