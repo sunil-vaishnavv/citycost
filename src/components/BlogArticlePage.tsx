@@ -6,6 +6,13 @@ import ContentPageShell, {
   ContentLinkGroup,
 } from './ContentPageShell';
 import { RichText } from './RichText';
+import { ProseHtml } from './ProseHtml';
+import {
+  containsHtml,
+  listItemsFromContent,
+  blockHeadingLevel,
+  blockHeadingText,
+} from './editorial/manual-html-blocks';
 
 type Block = {
   id: string;
@@ -33,6 +40,7 @@ export type BlogArticleView = {
   last_public_update_at: string | null;
   blocks: Block[];
   internal_links?: { recommendations?: LinkRec[]; count?: number } | null;
+  featured_image?: { url: string; alt?: string } | null;
 };
 
 type Related = {
@@ -160,6 +168,61 @@ function SectionHeading({ id, children }: { id: string; children: ReactNode }) {
   );
 }
 
+function SubHeading({
+  level,
+  id,
+  children,
+}: {
+  level: number;
+  id?: string;
+  children: ReactNode;
+}) {
+  if (level === 4) {
+    return (
+      <h4
+        id={id}
+        className="scroll-mt-28 text-lg font-semibold tracking-tight text-slate-900 dark:text-white"
+      >
+        {children}
+      </h4>
+    );
+  }
+  return (
+    <h3
+      id={id}
+      className="scroll-mt-28 text-xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-[1.35rem]"
+    >
+      {children}
+    </h3>
+  );
+}
+
+function BlockBody({
+  body,
+  links,
+  used,
+  onNavigate,
+}: {
+  body: string;
+  links: LinkRec[];
+  used: Set<string>;
+  onNavigate: (path: string) => void;
+}) {
+  if (!body) return null;
+  if (containsHtml(body)) {
+    return (
+      <div className="text-[15px] leading-[1.8] text-slate-700 dark:text-slate-300 sm:text-base [&_a]:font-semibold [&_a]:text-teal-700 [&_a]:underline [&_a]:decoration-teal-400/70 [&_a]:underline-offset-2 dark:[&_a]:text-teal-300">
+        <ProseHtml html={body} />
+      </div>
+    );
+  }
+  return (
+    <p className="text-[15px] leading-[1.8] text-slate-700 dark:text-slate-300 sm:text-base whitespace-pre-wrap">
+      <RichText text={body} links={links} used={used} onNavigate={onNavigate} />
+    </p>
+  );
+}
+
 function FaqAccordion({
   items,
   links,
@@ -221,8 +284,10 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
       const isToc = /^table of contents|^contents$/i.test(heading);
       if (isToc) continue;
       if (b.type === 'heading') {
-        const label = heading || blockPlainText(b.content).trim();
+        const label = blockHeadingText(b as Block & { content?: unknown }) || heading || blockPlainText(b.content).trim();
         if (!label) continue;
+        const level = blockHeadingLevel(b as Block & { content?: unknown });
+        if (level >= 3) continue;
         idx += 1;
         map.set(b.id, slugifyHeading(label, idx));
         continue;
@@ -297,6 +362,14 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
             <p className="mt-5 max-w-3xl text-base leading-relaxed text-slate-600 dark:text-slate-300 sm:text-lg">
               {article.excerpt}
             </p>
+          )}
+          {article.featured_image?.url && (
+            <img
+              src={article.featured_image.url}
+              alt={article.featured_image.alt || title}
+              className="mt-6 max-h-[420px] w-full rounded-2xl border border-slate-200/80 object-cover shadow-sm dark:border-white/10"
+              loading="eager"
+            />
           )}
         </header>
 
@@ -425,34 +498,42 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
               }
 
               if (b.type === 'list') {
-                const items = Array.isArray(b.content) ? b.content : [b.content];
+                const { items, ordered } = listItemsFromContent(b.content);
+                const ListTag = ordered ? 'ol' : 'ul';
+                const listClass = ordered
+                  ? 'list-decimal space-y-2.5 pl-6'
+                  : 'space-y-2.5 pl-1';
                 return (
                   <section key={b.id} className="space-y-3">
                     {heading && sectionId && (
                       <SectionHeading id={sectionId}>{heading}</SectionHeading>
                     )}
-                    <ul className="space-y-2.5 pl-1">
+                    <ListTag className={listClass}>
                       {items.map((item, i) => (
                         <li
                           key={i}
-                          className="flex gap-3 text-[15px] leading-relaxed text-slate-700 dark:text-slate-300"
+                          className={`text-[15px] leading-relaxed text-slate-700 dark:text-slate-300 ${
+                            ordered ? '' : 'flex gap-3'
+                          }`}
                         >
-                          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-teal-500" />
+                          {!ordered && (
+                            <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-teal-500" />
+                          )}
                           <span>
-                            {typeof item === 'string'
-                              ? (
-                                  <RichText
-                                    text={item}
-                                    links={links}
-                                    used={used}
-                                    onNavigate={onNavigate}
-                                  />
-                                )
-                              : JSON.stringify(item)}
+                            {containsHtml(item) ? (
+                              <ProseHtml html={item} />
+                            ) : (
+                              <RichText
+                                text={item}
+                                links={links}
+                                used={used}
+                                onNavigate={onNavigate}
+                              />
+                            )}
                           </span>
                         </li>
                       ))}
-                    </ul>
+                    </ListTag>
                   </section>
                 );
               }
@@ -481,8 +562,22 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
               }
 
               if (b.type === 'heading') {
-                const label = heading || blockPlainText(b.content).trim();
-                if (!label || !sectionId) return null;
+                const label =
+                  blockHeadingText(b as Block & { content?: unknown }) ||
+                  heading ||
+                  blockPlainText(b.content).trim();
+                if (!label) return null;
+                const level = blockHeadingLevel(b as Block & { content?: unknown });
+                if (level === 3 || level === 4) {
+                  return (
+                    <div key={b.id}>
+                      <SubHeading level={level} id={sectionId}>
+                        {label}
+                      </SubHeading>
+                    </div>
+                  );
+                }
+                if (!sectionId) return null;
                 return (
                   <div key={b.id}>
                     <SectionHeading id={sectionId}>{label}</SectionHeading>
@@ -496,16 +591,12 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
                   {heading && b.type !== 'intro' && sectionId && (
                     <SectionHeading id={sectionId}>{heading}</SectionHeading>
                   )}
-                  {body ? (
-                    <p className="text-[15px] leading-[1.8] text-slate-700 dark:text-slate-300 sm:text-base whitespace-pre-wrap">
-                      <RichText
-                        text={body}
-                        links={links}
-                        used={used}
-                        onNavigate={onNavigate}
-                      />
-                    </p>
-                  ) : null}
+                  <BlockBody
+                    body={body}
+                    links={links}
+                    used={used}
+                    onNavigate={onNavigate}
+                  />
                 </section>
               );
             })}

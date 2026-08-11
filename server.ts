@@ -225,6 +225,10 @@ app.get('/api/blog/:slug', async (req, res) => {
         excerpt: a.excerpt,
         reading_time_minutes: a.reading_time_minutes,
       }));
+    const { extractFeaturedImage } = await import(
+      './lib/editorial-engine/manual/html-blocks.js'
+    );
+    const featured_image = extractFeaturedImage(article.draft);
     return res.json({
       article: {
         slug: article.slug,
@@ -241,6 +245,9 @@ app.get('/api/blog/:slug', async (req, res) => {
         blocks: article.draft.blocks,
         internal_links: article.internal_links,
         entity_map: article.entity_map,
+        featured_image: featured_image
+          ? { url: featured_image.url, alt: featured_image.alt }
+          : null,
         // Never expose raw_ai_response / prompts
       },
       related,
@@ -862,6 +869,10 @@ async function start() {
   const server = http.createServer(app);
 
   if (isDev) {
+    const uploadsDirDev = path.resolve(__dirname, 'public', 'uploads');
+    if (fs.existsSync(uploadsDirDev)) {
+      app.use('/uploads', express.static(uploadsDirDev, { maxAge: '0', etag: true }));
+    }
     const { createServer: createViteServer } = await import('vite');
     vite = await createViteServer({
       server: { middlewareMode: true, hmr: { server } },
@@ -891,6 +902,10 @@ async function start() {
       process.exit(1);
     }
     app.use(express.static(dist, { index: false, maxAge: '7d', etag: true }));
+    const uploadsDir = path.resolve(__dirname, 'public', 'uploads');
+    if (fs.existsSync(uploadsDir)) {
+      app.use('/uploads', express.static(uploadsDir, { maxAge: '30d', etag: true }));
+    }
     app.get('*', async (req, res) => {
       try {
         const htmlPath = path.join(dist, 'index.html');

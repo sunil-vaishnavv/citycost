@@ -58,8 +58,10 @@ import AdvancedPanel from './wizard/AdvancedPanel';
 import WizardProgress from './wizard/WizardProgress';
 import PublishedContentEditor from './PublishedContentEditor';
 import ManualBlogEditor, { isManualArticle } from './ManualBlogEditor';
+import { extractFeaturedImage } from './manual-html-blocks';
 import {
   FieldRow,
+  PreviewHeading,
   RenderBlockBody,
   headingLabel,
   isTocBlock,
@@ -793,6 +795,17 @@ export default function ArticleDetailPanel({
                     {preview.excerpt}
                   </p>
                 )}
+                {(() => {
+                  const fi = extractFeaturedImage(raw?.draft_json);
+                  if (!fi?.url) return null;
+                  return (
+                    <img
+                      src={fi.url}
+                      alt={fi.alt || seo?.seo_title || article.seo_title || 'Featured'}
+                      className="mt-5 aspect-[16/9] w-full rounded-xl border border-slate-200 object-cover dark:border-white/10"
+                    />
+                  );
+                })()}
                 <p className="mt-2 text-xs text-slate-400">
                   {preview.word_count} words
                   {preview.reading_time_minutes != null
@@ -808,9 +821,13 @@ export default function ArticleDetailPanel({
                     return (
                       <section key={b.id}>
                         {showH && label && (
-                          <h2 className="mb-2 font-display text-xl font-semibold text-slate-900 dark:text-white">
-                            {label}
-                          </h2>
+                          block.type === 'heading' ? (
+                            <PreviewHeading block={b} />
+                          ) : (
+                            <h2 className="mb-2 font-display text-xl font-semibold text-slate-900 dark:text-white">
+                              {label}
+                            </h2>
+                          )
                         )}
                         {b.type !== 'heading' && (
                           <RenderBlockBody block={b} headingToAnchor={headingToAnchor} />
@@ -862,13 +879,21 @@ export default function ArticleDetailPanel({
         </div>
       )}
 
-      <div className="grid lg:grid-cols-[1fr_240px]">
-        <div className="min-h-[420px] space-y-5 p-5">
+      <div className={manualArticle && preview.status !== 'published' ? '' : 'grid lg:grid-cols-[1fr_240px]'}>
+        <div
+          className={
+            manualArticle && preview.status !== 'published'
+              ? 'p-5'
+              : 'min-h-[420px] space-y-5 p-5'
+          }
+        >
           {manualArticle && preview.status !== 'published' && (
             <ManualBlogEditor
               mode="edit"
               articleId={articleId}
               topicId={article.topic_id}
+              articleStatus={preview.status}
+              preview={preview}
               initial={{
                 seo_title: article.seo_title || '',
                 meta_title: article.meta_title || '',
@@ -876,7 +901,9 @@ export default function ArticleDetailPanel({
                 excerpt: article.excerpt || '',
                 slug: article.slug,
                 content_type: article.content_type,
+                published_at: article.published_at,
                 blocks: preview.blocks,
+                draft_json: raw?.draft_json,
               }}
               onSaved={() => {
                 setMessage('Draft saved');
@@ -1433,7 +1460,8 @@ export default function ArticleDetailPanel({
           />
         </div>
 
-        {/* Simplified right sidebar */}
+        {/* Simplified right sidebar — manual drafts use editor sidebar instead */}
+        {!(manualArticle && preview.status !== 'published') && (
         <aside className="space-y-3 border-t border-slate-100 bg-slate-50/70 p-4 lg:border-t-0 lg:border-l dark:border-white/10 dark:bg-white/[0.02]">
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
             Quality panel
@@ -1500,6 +1528,7 @@ export default function ArticleDetailPanel({
             Guided wizard · stage from article state
           </p>
         </aside>
+        )}
       </div>
     </Card>
   );

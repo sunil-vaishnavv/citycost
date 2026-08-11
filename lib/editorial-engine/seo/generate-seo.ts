@@ -136,6 +136,24 @@ export async function generateArticleSeo(
       entities,
       contentType: article.content_type,
     });
+
+    try {
+      const { extractFeaturedImage } = await import('../manual/html-blocks.js');
+      const { SITE_URL } = await import('../../../src/utils/seo.js');
+      const featured = extractFeaturedImage(draft);
+      if (featured?.url) {
+        const abs = featured.url.startsWith('http')
+          ? featured.url
+          : `${SITE_URL}${featured.url.startsWith('/') ? featured.url : `/${featured.url}`}`;
+        seo_package = {
+          ...seo_package,
+          og: { ...seo_package.og, image: abs },
+          twitter: { ...seo_package.twitter, image: abs },
+        };
+      }
+    } catch {
+      /* keep default OG image */
+    }
     // Optional Router polish — never blocks deterministic SEO on failure
     if (!opts?.skipAiPolish) {
       try {

@@ -7,6 +7,13 @@ import type { InternalLinkRecommendation } from '../seo/internal-links.js';
 import { isValidSiteHref } from './linkify-paths.js';
 import { blockContentText } from '../reviewer/text-utils.js';
 import { linkifyBarePathsInHtml } from './linkify-paths.js';
+import {
+  containsHtml,
+  sanitizeRichHtml,
+  blockHeadingLevel,
+  blockHeadingText,
+  listItemsFromContent,
+} from '../manual/html-blocks.js';
 
 function esc(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -100,18 +107,23 @@ function renderList(
   links: InternalLinkRecommendation[],
   used: Set<string>
 ): string {
-  if (!Array.isArray(content)) {
-    return `<p>${renderInlineWithLinks(String(content || ''), links, used)}</p>`;
+  const { items, ordered } = listItemsFromContent(content);
+  if (!items.length) {
+    if (typeof content === 'string' && content.trim()) {
+      return `<p>${renderInlineWithLinks(content, links, used)}</p>`;
+    }
+    return '';
   }
-  const items = content
+  const tag = ordered ? 'ol' : 'ul';
+  const lis = items
     .map((item) => {
-      if (typeof item === 'string') {
-        return `<li>${renderInlineWithLinks(item, links, used)}</li>`;
-      }
-      return `<li>${esc(JSON.stringify(item))}</li>`;
+      const inner = containsHtml(item)
+        ? sanitizeRichHtml(item)
+        : renderInlineWithLinks(item, links, used);
+      return `<li>${inner}</li>`;
     })
     .join('');
-  return `<ul>${items}</ul>`;
+  return `<${tag}>${lis}</${tag}>`;
 }
 
 function renderTable(content: unknown): string {
@@ -158,7 +170,10 @@ function renderTable(content: unknown): string {
 export function buildTocHtml(blocks: DraftBlock[]): string {
   const headings = blocks
     .filter((b) => b.type === 'heading' || (b.heading && b.type !== 'intro'))
-    .map((b) => (b.heading || blockContentText(b)).trim())
+    .map((b) => {
+      if (b.type === 'heading') return blockHeadingText(b);
+      return (b.heading || blockContentText(b)).trim();
+    })
     .filter((h) => h && !/^table of contents|^contents$/i.test(h));
   if (!headings.length) return '';
   const items = headings
@@ -190,7 +205,19 @@ export function renderArticleBlocksHtml(
       continue;
     }
 
-    if (block.type === 'heading' || (heading && ['paragraph', 'list', 'comparison', 'table', 'faq', 'summary', 'tip', 'warning'].includes(block.type) && heading)) {
+    if (block.type === 'heading') {
+      const label = blockHeadingText(block);
+      if (label && !/^table of contents/i.test(label)) {
+        headingIndex += 1;
+        const level = blockHeadingLevel(block);
+        parts.push(
+          `<h${level} id="section-${headingIndex}">${renderInlineWithLinks(label, links, used)}</h${level}>`
+        );
+      }
+      continue;
+    }
+
+    if (heading && ['paragraph', 'list', 'comparison', 'table', 'faq', 'summary', 'tip', 'warning'].includes(block.type) && heading) {
       if (heading && !/^table of contents/i.test(heading)) {
         headingIndex += 1;
         parts.push(`<h2 id="section-${headingIndex}">${esc(heading)}</h2>`);
@@ -200,11 +227,20 @@ export function renderArticleBlocksHtml(
     switch (block.type) {
       case 'intro':
       case 'paragraph':
-      case 'summary':
-        parts.push(
-          `<p class="blog-p blog-${block.type}">${renderInlineWithLinks(blockContentText(block), links, used)}</p>`
-        );
+      case 'summary': {
+        const raw =
+          typeof block.content === 'string' ? block.content : blockContentText(block);
+        if (containsHtml(raw)) {
+          parts.push(
+            `<div class="blog-p blog-${block.type} blog-rich">${sanitizeRichHtml(raw)}</div>`
+          );
+        } else {
+          parts.push(
+            `<p class="blog-p blog-${block.type}">${renderInlineWithLinks(raw, links, used)}</p>`
+          );
+        }
         break;
+      }
       case 'tip':
         parts.push(
           `<aside class="blog-tip"><strong>Tip:</strong> ${renderInlineWithLinks(blockContentText(block), links, used)}</aside>`
@@ -228,7 +264,6 @@ export function renderArticleBlocksHtml(
         );
         break;
       case 'heading':
-        // already emitted
         break;
       default:
         parts.push(`<p>${renderInlineWithLinks(blockContentText(block), links, used)}</p>`);

@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react';
 import { RichText } from '../../RichText';
+import { ProseHtml } from '../../ProseHtml';
+import { containsHtml, listItemsFromContent, blockHeadingLevel, blockHeadingText } from '../manual-html-blocks';
 
 export function normHeading(h: string): string {
   return h.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -56,8 +58,45 @@ export function headingLabel(block: {
   content?: unknown;
 }): string {
   if (typeof block.heading === 'string' && block.heading.trim()) return block.heading.trim();
-  if (block.type === 'heading' && typeof block.content === 'string') return block.content.trim();
+  if (block.type === 'heading') {
+    const fromObj = blockHeadingText(block as { type: string; heading?: string; content?: unknown });
+    if (fromObj) return fromObj;
+    if (typeof block.content === 'string') return block.content.trim();
+  }
   return '';
+}
+
+export function previewHeadingLevel(block: {
+  type: string;
+  heading?: string | null;
+  content?: unknown;
+}): number {
+  if (block.type === 'heading') {
+    return blockHeadingLevel(block as { type: string; heading?: string; content?: unknown });
+  }
+  return 2;
+}
+
+export function PreviewHeading({
+  block,
+  className,
+}: {
+  block: { type: string; heading?: string | null; content?: unknown };
+  className?: string;
+}) {
+  const label = headingLabel(block);
+  if (!label) return null;
+  const level = previewHeadingLevel(block);
+  const cls =
+    className ||
+    (level === 3
+      ? 'mb-2 text-lg font-semibold text-slate-900 dark:text-white'
+      : level === 4
+        ? 'mb-2 text-base font-semibold text-slate-900 dark:text-white'
+        : 'mb-2 font-display text-xl font-semibold text-slate-900 dark:text-white');
+  if (level === 3) return <h3 className={cls}>{label}</h3>;
+  if (level === 4) return <h4 className={cls}>{label}</h4>;
+  return <h2 className={cls}>{label}</h2>;
 }
 
 function RenderFaq({ content }: { content: unknown }) {
@@ -236,16 +275,31 @@ export function RenderBlockBody({
   if (block.type === 'faq') return <RenderFaq content={block.content} />;
   if (block.type === 'table') return <RenderTable content={block.content} />;
   if (block.type === 'comparison') return <RenderComparison content={block.content} />;
-  if (block.type === 'list' && Array.isArray(block.content)) {
+  if (block.type === 'list') {
+    const { items, ordered } = listItemsFromContent(block.content);
+    if (!items.length) return null;
+    const Tag = ordered ? 'ol' : 'ul';
+    const listClass = ordered
+      ? 'list-decimal space-y-1 pl-5 text-[13px] leading-relaxed text-slate-700 dark:text-slate-300'
+      : 'list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-slate-700 dark:text-slate-300';
     return (
-      <ul className="list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-slate-700 dark:text-slate-300">
-        {block.content.map((item, i) => (
-          <li key={i}>{typeof item === 'string' ? item : String(item)}</li>
+      <Tag className={listClass}>
+        {items.map((item, i) => (
+          <li key={i}>
+            {containsHtml(item) ? <ProseHtml html={item} /> : item}
+          </li>
         ))}
-      </ul>
+      </Tag>
     );
   }
   if (typeof block.content === 'string') {
+    if (containsHtml(block.content)) {
+      return (
+        <div className="text-[13px] leading-relaxed text-slate-700 dark:text-slate-300">
+          <ProseHtml html={block.content} />
+        </div>
+      );
+    }
     return (
       <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 dark:text-slate-300">
         {block.content}

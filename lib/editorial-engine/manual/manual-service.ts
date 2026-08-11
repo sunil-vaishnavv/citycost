@@ -22,6 +22,7 @@ import {
 } from '../writer/draft-validate.js';
 import { getSettings } from '../db/settings-repo.js';
 import type { DraftBlock } from '../writer/draft-validate.js';
+import type { FeaturedImageMeta } from './html-blocks.js';
 
 const MANUAL_CONTENT_TYPES = new Set([
   'guide',
@@ -57,7 +58,14 @@ function buildDraft(input: {
   meta_description: string;
   excerpt: string;
   blocks: DraftBlock[];
-}): WriterDraftPayload {
+  featured_image?: FeaturedImageMeta | null;
+  primary_keyword?: string;
+  semantic_keywords?: string[];
+}): WriterDraftPayload & {
+  featured_image?: FeaturedImageMeta | null;
+  primary_keyword?: string;
+  semantic_keywords?: string[];
+} {
   const seoTitle = input.seo_title.trim();
   return {
     seo_title: seoTitle,
@@ -65,6 +73,9 @@ function buildDraft(input: {
     meta_description: input.meta_description.trim(),
     excerpt: input.excerpt.trim(),
     blocks: input.blocks,
+    featured_image: input.featured_image ?? null,
+    primary_keyword: input.primary_keyword?.trim() || undefined,
+    semantic_keywords: input.semantic_keywords?.length ? input.semantic_keywords : undefined,
   };
 }
 
@@ -178,6 +189,9 @@ export async function updateManualArticleService(
     excerpt?: string;
     slug?: string;
     blocks?: DraftBlock[];
+    featured_image?: FeaturedImageMeta | null;
+    primary_keyword?: string;
+    semantic_keywords?: string[];
   }
 ): Promise<{ ok: true; word_count: number }> {
   const article = await getArticleById(articleId);
@@ -189,18 +203,33 @@ export async function updateManualArticleService(
     throw new Error('Use update-content for published articles');
   }
 
-  const existingDraft: WriterDraftPayload =
+  const existingRaw =
     article.draft_json && typeof article.draft_json === 'object'
-      ? (article.draft_json as WriterDraftPayload)
-      : {
-          seo_title: article.seo_title || '',
-          meta_title: article.meta_title || '',
-          meta_description: article.meta_description || '',
-          excerpt: article.excerpt || '',
-          blocks: Array.isArray(article.blocks_json)
-            ? (article.blocks_json as DraftBlock[])
-            : [],
-        };
+      ? (article.draft_json as Record<string, unknown>)
+      : {};
+
+  const existingDraft: WriterDraftPayload & {
+    featured_image?: FeaturedImageMeta | null;
+    primary_keyword?: string;
+    semantic_keywords?: string[];
+  } = {
+    seo_title: article.seo_title || '',
+    meta_title: article.meta_title || '',
+    meta_description: article.meta_description || '',
+    excerpt: article.excerpt || '',
+    blocks: Array.isArray(article.blocks_json)
+      ? (article.blocks_json as DraftBlock[])
+      : [],
+    featured_image:
+      existingRaw.featured_image && typeof existingRaw.featured_image === 'object'
+        ? (existingRaw.featured_image as FeaturedImageMeta)
+        : null,
+    primary_keyword:
+      typeof existingRaw.primary_keyword === 'string' ? existingRaw.primary_keyword : undefined,
+    semantic_keywords: Array.isArray(existingRaw.semantic_keywords)
+      ? existingRaw.semantic_keywords.map(String)
+      : undefined,
+  };
 
   const draft = buildDraft({
     seo_title: input.seo_title ?? existingDraft.seo_title,
@@ -208,6 +237,10 @@ export async function updateManualArticleService(
     meta_description: input.meta_description ?? existingDraft.meta_description,
     excerpt: input.excerpt ?? existingDraft.excerpt,
     blocks: input.blocks ?? existingDraft.blocks,
+    featured_image:
+      input.featured_image !== undefined ? input.featured_image : existingDraft.featured_image,
+    primary_keyword: input.primary_keyword ?? existingDraft.primary_keyword,
+    semantic_keywords: input.semantic_keywords ?? existingDraft.semantic_keywords,
   });
 
   const settings = await getSettings();
@@ -286,6 +319,101 @@ export async function prepareManualArticleForPublish(
     message: 'SEO generated — article ready for publish review',
     status: 'review',
   };
+}
+
+export async function uploadManualFeaturedImage(input: {
+  articleId: number;
+  dataBase64: string;
+  mime: string;
+  alt?: string;
+}): Promise<{ featured_image: FeaturedImageMeta }> {
+  const article = await getArticleById(input.articleId);
+  if (!article) throw new Error('Article not found');
+  if (!isManualArticle(article)) throw new Error('Featured image upload is for manual articles only');
+
+  const { saveFeaturedImage, deleteFeaturedImageFile } = await import('./featured-image.js');
+  const { extractFeaturedImage } = await import('./html-blocks.js');
+
+  const existingDraft =
+    article.draft_json && typeof article.draft_json === 'object'
+      ? (article.draft_json as Record<string, unknown>)
+      : {};
+  const prev = extractFeaturedImage(existingDraft);
+  if (prev?.url) await deleteFeaturedImageFile(prev.url);
+
+  const featured_image = await saveFeaturedImage({
+    articleId: input.articleId,
+    dataBase64: input.dataBase64,
+    mime: input.mime,
+    alt: input.alt,
+  });
+
+  const blocks = Array.isArray(article.blocks_json)
+    ? (article.blocks_json as DraftBlock[])
+    : [];
+  const draft = buildDraft({
+    seo_title: article.seo_title || '',
+    meta_title: article.meta_title || '',
+    meta_description: article.meta_description || '',
+    excerpt: article.excerpt || '',
+    blocks,
+    featured_image,
+    primary_keyword:
+      typeof existingDraft.primary_keyword === 'string' ? existingDraft.primary_keyword : undefined,
+    semantic_keywords: Array.isArray(existingDraft.semantic_keywords)
+      ? existingDraft.semantic_keywords.map(String)
+      : undefined,
+  });
+
+  await updateArticleDraft({
+    id: input.articleId,
+    draft,
+    word_count: article.word_count,
+    reading_time_minutes: article.reading_time_minutes || readingTimeMinutes(article.word_count),
+  });
+
+  return { featured_image };
+}
+
+export async function removeManualFeaturedImage(articleId: number): Promise<void> {
+  const article = await getArticleById(articleId);
+  if (!article) throw new Error('Article not found');
+  if (!isManualArticle(article)) throw new Error('Featured image removal is for manual articles only');
+
+  const { deleteFeaturedImageFile } = await import('./featured-image.js');
+  const existingDraft =
+    article.draft_json && typeof article.draft_json === 'object'
+      ? (article.draft_json as Record<string, unknown>)
+      : {};
+  const prev =
+    existingDraft.featured_image && typeof existingDraft.featured_image === 'object'
+      ? (existingDraft.featured_image as FeaturedImageMeta)
+      : null;
+  if (prev?.url) await deleteFeaturedImageFile(prev.url);
+
+  const blocks = Array.isArray(article.blocks_json)
+    ? (article.blocks_json as DraftBlock[])
+    : [];
+  const draft = buildDraft({
+    seo_title: article.seo_title || '',
+    meta_title: article.meta_title || '',
+    meta_description: article.meta_description || '',
+    excerpt: article.excerpt || '',
+    blocks,
+    featured_image: null,
+    primary_keyword:
+      typeof existingDraft.primary_keyword === 'string' ? existingDraft.primary_keyword : undefined,
+    semantic_keywords: Array.isArray(existingDraft.semantic_keywords)
+      ? existingDraft.semantic_keywords.map(String)
+      : undefined,
+  });
+
+  await updateArticleDraft({
+    id: articleId,
+    draft,
+    word_count: article.word_count,
+    reading_time_minutes: article.reading_time_minutes || readingTimeMinutes(article.word_count),
+  });
 }
 
 export async function createManualArticleFromTopic(topicId: number): Promise<{

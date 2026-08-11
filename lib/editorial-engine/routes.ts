@@ -1140,6 +1140,16 @@ export function createEditorialRouter(): Router {
         excerpt: typeof body.excerpt === 'string' ? body.excerpt : undefined,
         slug: typeof body.slug === 'string' ? body.slug : undefined,
         blocks: Array.isArray(body.blocks) ? body.blocks : undefined,
+        featured_image:
+          body.featured_image === null
+            ? null
+            : body.featured_image && typeof body.featured_image === 'object'
+              ? (body.featured_image as { url: string; alt?: string; path?: string })
+              : undefined,
+        primary_keyword: typeof body.primary_keyword === 'string' ? body.primary_keyword : undefined,
+        semantic_keywords: Array.isArray(body.semantic_keywords)
+          ? body.semantic_keywords.map(String)
+          : undefined,
       });
       return res.json(result);
     } catch (err) {
@@ -1158,6 +1168,68 @@ export function createEditorialRouter(): Router {
     } catch (err) {
       console.error('editorial prepare-manual-publish error:', err);
       return res.status(400).json({ error: (err as Error).message || 'Prepare failed' });
+    }
+  });
+
+  router.post('/articles/:id/manual/generate-seo', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const { generateManualSeoSuggestion } = await import('./manual/manual-seo-ai.js');
+      const blocks = Array.isArray(body.blocks) ? body.blocks : [];
+      if (!blocks.length && typeof body.content_html !== 'string') {
+        return res.status(400).json({ error: 'Provide blocks or save content first' });
+      }
+      let finalBlocks = blocks;
+      if (!finalBlocks.length && typeof body.content_html === 'string') {
+        const article = await getArticleById(id);
+        finalBlocks = Array.isArray(article?.blocks_json)
+          ? (article!.blocks_json as import('./writer/draft-validate.js').DraftBlock[])
+          : [];
+      }
+      const suggestion = await generateManualSeoSuggestion({
+        title: typeof body.seo_title === 'string' ? body.seo_title : '',
+        blocks: finalBlocks,
+        excerpt: typeof body.excerpt === 'string' ? body.excerpt : undefined,
+        articleId: id,
+      });
+      return res.json({ ok: true, suggestion });
+    } catch (err) {
+      console.error('editorial manual/generate-seo error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'SEO generation failed' });
+    }
+  });
+
+  router.post('/articles/:id/featured-image', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const { uploadManualFeaturedImage } = await import('./manual/manual-service.js');
+      const result = await uploadManualFeaturedImage({
+        articleId: id,
+        dataBase64: String(body.data_base64 || body.dataBase64 || ''),
+        mime: String(body.mime || body.content_type || 'image/jpeg'),
+        alt: typeof body.alt === 'string' ? body.alt : undefined,
+      });
+      return res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error('editorial featured-image upload error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Upload failed' });
+    }
+  });
+
+  router.delete('/articles/:id/featured-image', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
+      const { removeManualFeaturedImage } = await import('./manual/manual-service.js');
+      await removeManualFeaturedImage(id);
+      return res.json({ ok: true });
+    } catch (err) {
+      console.error('editorial featured-image delete error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Remove failed' });
     }
   });
 
