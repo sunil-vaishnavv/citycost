@@ -640,11 +640,12 @@ export function validateWriterDraft(
 /** Relaxed validation for admin-written manual articles (no AI pipeline contract). */
 export function validateManualDraft(
   draft: WriterDraftPayload,
-  opts?: { minWords?: number; maxWords?: number }
+  opts?: { minWords?: number; maxWords?: number; mode?: 'draft' | 'publish' }
 ): DraftValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
-  const minWords = opts?.minWords ?? 50;
+  const mode = opts?.mode ?? 'publish';
+  const minWords = opts?.minWords ?? (mode === 'draft' ? 1 : 50);
   const maxWords = opts?.maxWords ?? 15000;
 
   if (!draft || typeof draft !== 'object') {
@@ -659,6 +660,7 @@ export function validateManualDraft(
   }
 
   for (const key of ['seo_title', 'meta_title', 'meta_description', 'excerpt'] as const) {
+    if (mode === 'draft' && key !== 'seo_title') continue;
     if (!draft[key] || typeof draft[key] !== 'string' || !draft[key].trim()) {
       errors.push(`Missing ${key}`);
     }
@@ -688,8 +690,10 @@ export function validateManualDraft(
   }
 
   const word_count = countDraftWords(sanitized);
-  if (word_count < minWords) {
+  if (mode === 'publish' && word_count < minWords) {
     errors.push(`Word count ${word_count} below minimum ${minWords}`);
+  } else if (mode === 'draft' && word_count < 1) {
+    errors.push('Add some article content before saving');
   }
   if (word_count > maxWords) {
     errors.push(`Word count ${word_count} above maximum ${maxWords}`);

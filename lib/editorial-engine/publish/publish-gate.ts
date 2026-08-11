@@ -112,15 +112,19 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
   const linksPassed = manual
     ? true
     : bodyLinkCount >= 1 && packageLinkCount >= settings.internal_link_min;
-  const hasJsonLd = Boolean(
-    json_ld &&
-      Array.isArray(json_ld['@graph']) &&
-      json_ld['@graph'].length > 0 &&
-      json_ld.schema_status?.article &&
-      json_ld.schema_status?.webpage
-  );
+  const hasJsonLd = manual
+    ? Boolean(json_ld && Array.isArray(json_ld['@graph']) && json_ld['@graph'].length > 0)
+    : Boolean(
+        json_ld &&
+          Array.isArray(json_ld['@graph']) &&
+          json_ld['@graph'].length > 0 &&
+          json_ld.schema_status?.article &&
+          json_ld.schema_status?.webpage
+      );
   const slugOk = Boolean(article.slug && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(article.slug));
-  const statusOk = article.status === 'review';
+  const statusOk = manual
+    ? article.status === 'draft' || article.status === 'review'
+    : article.status === 'review';
 
   const confidence_level =
     (findings?.confidence_level as ConfidenceLevel | undefined) ||
@@ -137,9 +141,15 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
   const checks: PublishCheckItem[] = [
     {
       key: 'status_review',
-      label: 'Status is review',
+      label: manual ? 'Ready to publish' : 'Status is review',
       passed: statusOk,
-      detail: statusOk ? undefined : `Current status: ${article.status}`,
+      detail: statusOk
+        ? manual
+          ? `Current status: ${article.status}`
+          : undefined
+        : manual
+          ? `Cannot publish from status: ${article.status}`
+          : `Current status: ${article.status}`,
     },
     {
       key: 'quality_review',
@@ -166,12 +176,18 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
     {
       key: 'seo_validation',
       label: 'SEO Validation',
-      passed: Boolean(seo_validation) && !seoBlocking,
-      detail: seoBlocking
-        ? (seo_validation?.errors || []).map((e) => e.message).join('; ')
-        : seo_validation
-          ? `Score ${seo_validation.seo_score}`
-          : 'SEO validation missing',
+      passed: manual
+        ? Boolean(seo_package?.meta_title && seo_package?.meta_description)
+        : Boolean(seo_validation) && !seoBlocking,
+      detail: manual
+        ? seo_package
+          ? 'SEO package ready'
+          : 'SEO package missing'
+        : seoBlocking
+          ? (seo_validation?.errors || []).map((e) => e.message).join('; ')
+          : seo_validation
+            ? `Score ${seo_validation.seo_score}`
+            : 'SEO validation missing',
     },
     {
       key: 'schema',
@@ -215,8 +231,8 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
     .filter((c) => !c.passed)
     .map((c) => ({ code: c.key, message: `${c.label}: ${c.detail || 'failed'}` }));
 
-  // draft → published is never allowed (status_review enforces review)
-  if (article.status === 'draft') {
+  // draft → published is never allowed for automatic articles (manual may publish from draft)
+  if (article.status === 'draft' && !manual) {
     blocking_errors.unshift({
       code: 'draft_not_allowed',
       message: 'Cannot publish from draft — review required first',

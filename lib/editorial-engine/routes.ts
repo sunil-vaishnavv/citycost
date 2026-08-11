@@ -1158,6 +1158,19 @@ export function createEditorialRouter(): Router {
     }
   });
 
+  router.post('/articles/:id/manual/publish', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
+      const { publishManualArticleService } = await import('./manual/manual-service.js');
+      const result = await publishManualArticleService(id);
+      return res.status(result.ok ? 200 : 422).json(result);
+    } catch (err) {
+      console.error('editorial manual/publish error:', err);
+      return res.status(400).json({ error: (err as Error).message || 'Publish failed' });
+    }
+  });
+
   router.post('/articles/:id/prepare-manual-publish', requireEditorialAuth, requireOrigin, async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
@@ -1248,28 +1261,34 @@ export function createEditorialRouter(): Router {
   });
 
   router.get('/articles/:id', requireEditorialAuth, async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
-    let article = await getArticleById(id);
-    if (!article) return res.status(404).json({ error: 'Article not found' });
-    // Auto-strip cert-batch noise from unpublished titles/slugs on load
     try {
-      const { hasCertBatchNoise } = await import('./utils/clean-title.js');
-      if (
-        hasCertBatchNoise(article.seo_title) ||
-        hasCertBatchNoise(article.meta_title) ||
-        (article.status !== 'published' && hasCertBatchNoise(article.slug))
-      ) {
-        const { cleanArticlePublicIdentity } = await import('./utils/clean-article-identity.js');
-        await cleanArticlePublicIdentity(id);
-        article = (await getArticleById(id)) || article;
+      const id = parseInt(req.params.id, 10);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
+      let article = await getArticleById(id);
+      if (!article) return res.status(404).json({ error: 'Article not found' });
+      // Auto-strip cert-batch noise from unpublished titles/slugs on load
+      try {
+        const { hasCertBatchNoise } = await import('./utils/clean-title.js');
+        if (
+          hasCertBatchNoise(article.seo_title) ||
+          hasCertBatchNoise(article.meta_title) ||
+          (article.status !== 'published' && hasCertBatchNoise(article.slug))
+        ) {
+          const { cleanArticlePublicIdentity } = await import('./utils/clean-article-identity.js');
+          await cleanArticlePublicIdentity(id);
+          article = (await getArticleById(id)) || article;
+        }
+      } catch (err) {
+        console.warn('editorial clean-identity on load:', (err as Error).message);
       }
-    } catch (err) {
-      console.warn('editorial clean-identity on load:', (err as Error).message);
-    }
-    // Omit raw by default for list detail
-    const { raw_ai_response: _raw, ...safe } = article;
-    const fromLog = await getLatestWriterGenerationDebug(id);
+      // Omit raw by default for list detail
+      const { raw_ai_response: _raw, ...safe } = article;
+      let fromLog: Awaited<ReturnType<typeof getLatestWriterGenerationDebug>> = null;
+      try {
+        fromLog = await getLatestWriterGenerationDebug(id);
+      } catch (err) {
+        console.warn('editorial generation debug on load:', (err as Error).message);
+      }
     const promptTokens = fromLog?.prompt_tokens ?? safe.tokens_in ?? null;
     const completionTokens = fromLog?.completion_tokens ?? safe.tokens_out ?? null;
     const totalTokens =
@@ -1301,6 +1320,10 @@ export function createEditorialRouter(): Router {
     return res.json({
       article: { ...safe, generation_debug, source: articleSource(article) },
     });
+    } catch (err) {
+      console.error('editorial articles/:id error:', err);
+      return res.status(500).json({ error: (err as Error).message || 'Failed to load article' });
+    }
   });
 
   router.get('/articles/:id/raw', requireEditorialAuth, async (req, res) => {

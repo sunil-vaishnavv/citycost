@@ -107,6 +107,43 @@ function qs(params: Record<string, string | number | undefined | null>): string 
   return s ? `?${s}` : '';
 }
 
+function blocksFromRaw(raw: ArticleRaw | null | undefined): import('./api').ArticleBlock[] {
+  if (!raw?.draft_json || typeof raw.draft_json !== 'object') return [];
+  const blocks = (raw.draft_json as { blocks?: unknown }).blocks;
+  return Array.isArray(blocks) ? (blocks as import('./api').ArticleBlock[]) : [];
+}
+
+function buildFallbackPreview(article: Article, blocks: import('./api').ArticleBlock[] = []): ArticlePreview {
+  return {
+    article_id: article.id,
+    slug: article.slug,
+    status: article.status,
+    preview_version: article.preview_version,
+    reading_time_minutes: article.reading_time_minutes,
+    word_count: article.word_count,
+    quality_score: article.quality_score,
+    review_score: article.review_score,
+    blocks,
+    excerpt: article.excerpt,
+    seo_package: null,
+    entity_map: null,
+    json_ld: null,
+    internal_links: null,
+    seo_validation: null,
+    quality_panel: {
+      overall_seo_score: null,
+      eeat_score: null,
+      helpful_content_score: null,
+      search_intent_score: null,
+      readability_score: null,
+      internal_link_count: 0,
+      schema_status: null,
+      missing_items: [],
+      quality_score: article.quality_score,
+    },
+  };
+}
+
 export default function ArticleDetailPanel({
   articleId,
   onChanged,
@@ -233,34 +270,64 @@ export default function ArticleDetailPanel({
   const load = async () => {
     setLoading(true);
     setError('');
+    const loadWarnings: string[] = [];
     try {
-      // Load article first so server can auto-strip cert-batch noise from title/slug
       const articleRes = await api.get<{ article: Article }>(
         `/api/editorial/articles/${articleId}`
       );
-      const [previewRes, historyRes, readinessRes, rawRes, revRes, obsRes] = await Promise.all([
-        api.get<{ preview: ArticlePreview }>(`/api/editorial/articles/${articleId}/preview`),
-        api.get<{ reports: ReviewHistoryItem[] }>(`/api/editorial/articles/${articleId}/reviews`),
-        api.get<{ readiness: PublishReadiness }>(
-          `/api/editorial/articles/${articleId}/publish-readiness`
-        ),
-        api.get<ArticleRaw>(`/api/editorial/articles/${articleId}/raw`).catch(() => null),
-        api
-          .get<{ revisions: RevisionHistoryItem[] }>(
+      const articleData = articleRes.article;
+      setArticle(articleData);
+
+      const [previewSettled, historySettled, readinessSettled, rawSettled, revSettled, obsSettled] =
+        await Promise.allSettled([
+          api.get<{ preview: ArticlePreview }>(`/api/editorial/articles/${articleId}/preview`),
+          api.get<{ reports: ReviewHistoryItem[] }>(`/api/editorial/articles/${articleId}/reviews`),
+          api.get<{ readiness: PublishReadiness }>(
+            `/api/editorial/articles/${articleId}/publish-readiness`
+          ),
+          api.get<ArticleRaw>(`/api/editorial/articles/${articleId}/raw`),
+          api.get<{ revisions: RevisionHistoryItem[] }>(
             `/api/editorial/articles/${articleId}/revisions`
-          )
-          .catch(() => ({ revisions: [] as RevisionHistoryItem[] })),
-        api
-          .get<ArticleObservability>(`/api/editorial/articles/${articleId}/observability`)
-          .catch(() => null),
-      ]);
-      setArticle(articleRes.article);
-      setPreview(previewRes.preview);
-      setHistory(historyRes.reports || []);
-      setReadiness(readinessRes.readiness);
-      setRaw(rawRes);
-      setRevisions(revRes.revisions || []);
-      setObservability(obsRes);
+          ),
+          api.get<ArticleObservability>(`/api/editorial/articles/${articleId}/observability`),
+        ]);
+
+      const rawData =
+        rawSettled.status === 'fulfilled' ? rawSettled.value : null;
+      if (rawSettled.status === 'rejected') {
+        loadWarnings.push('Some article metadata could not be loaded.');
+      }
+      setRaw(rawData);
+
+      let previewData: ArticlePreview;
+      if (previewSettled.status === 'fulfilled') {
+        previewData = previewSettled.value.preview;
+      } else {
+        previewData = buildFallbackPreview(articleData, blocksFromRaw(rawData));
+        loadWarnings.push('Preview data unavailable — showing saved draft content.');
+      }
+      setPreview(previewData);
+
+      if (historySettled.status === 'fulfilled') {
+        setHistory(historySettled.value.reports || []);
+      } else {
+        setHistory([]);
+      }
+
+      if (readinessSettled.status === 'fulfilled') {
+        setReadiness(readinessSettled.value.readiness);
+      } else {
+        setReadiness(null);
+      }
+
+      if (revSettled.status === 'fulfilled') {
+        setRevisions(revSettled.value.revisions || []);
+      } else {
+        setRevisions([]);
+      }
+
+      setObservability(obsSettled.status === 'fulfilled' ? obsSettled.value : null);
+
       try {
         const qr = await api.get<{
           report: { findings_json: QualityReport; passed: boolean; score: number };
@@ -286,6 +353,10 @@ export default function ArticleDetailPanel({
         setQualityReport(findings);
       } catch {
         setQualityReport(null);
+      }
+
+      if (loadWarnings.length) {
+        setMessage(loadWarnings.join(' '));
       }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load article');

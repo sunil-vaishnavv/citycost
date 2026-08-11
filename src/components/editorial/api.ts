@@ -29,6 +29,43 @@ export class ApiError extends Error {
   }
 }
 
+function friendlyHttpError(status: number): string {
+  if (status === 502) {
+    return 'The server is temporarily unavailable. Please wait a moment and try again.';
+  }
+  if (status === 503) {
+    return 'The service is temporarily unavailable. Please try again shortly.';
+  }
+  if (status === 504) {
+    return 'The request timed out. Please try again.';
+  }
+  if (status === 413) {
+    return 'The upload is too large for the server to accept.';
+  }
+  return `Something went wrong (HTTP ${status}). Please try again.`;
+}
+
+function extractErrorMessage(data: unknown, status: number): string {
+  if (data && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    if (typeof o.error === 'string' && o.error.trim()) return o.error.trim();
+    if (typeof o.message === 'string' && o.message.trim()) return o.message.trim();
+    if (Array.isArray(o.errors)) {
+      const parts = o.errors
+        .map((e) => {
+          if (typeof e === 'string') return e;
+          if (e && typeof e === 'object' && typeof (e as { message?: string }).message === 'string') {
+            return (e as { message: string }).message;
+          }
+          return '';
+        })
+        .filter(Boolean);
+      if (parts.length) return parts.join('; ');
+    }
+  }
+  return friendlyHttpError(status);
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -38,9 +75,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...init, headers, credentials: 'include' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message =
-      (data && (data.error || data.message)) || `Request failed (${res.status})`;
-    throw new ApiError(message, res.status);
+    throw new ApiError(extractErrorMessage(data, res.status), res.status);
   }
   return data as T;
 }

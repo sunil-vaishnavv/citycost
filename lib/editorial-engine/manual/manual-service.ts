@@ -118,6 +118,10 @@ export async function createManualArticleService(input: {
   const seoTitle = input.seo_title.trim();
   if (!seoTitle) throw new Error('Blog title is required');
 
+  const metaDescription =
+    (input.meta_description || '').trim() || `Draft summary for ${seoTitle}`.slice(0, 160);
+  const excerpt = (input.excerpt || '').trim() || seoTitle.slice(0, 220);
+
   const slug = normalizeSlug(input.slug || seoTitle, seoTitle);
   if (await slugExists(slug)) {
     throw new Error(`Slug "${slug}" is already in use`);
@@ -141,8 +145,8 @@ export async function createManualArticleService(input: {
   const draft = buildDraft({
     seo_title: seoTitle,
     meta_title: input.meta_title,
-    meta_description: input.meta_description,
-    excerpt: input.excerpt,
+    meta_description: metaDescription,
+    excerpt,
     blocks: input.blocks,
   });
 
@@ -151,6 +155,7 @@ export async function createManualArticleService(input: {
   const validation = validateManualDraft(draft, {
     minWords,
     maxWords: settings.article_length_max,
+    mode: 'draft',
   });
   if (!validation.ok) {
     throw new Error(validation.errors.join('; '));
@@ -247,6 +252,7 @@ export async function updateManualArticleService(
   const validation = validateManualDraft(draft, {
     minWords: 50,
     maxWords: settings.article_length_max,
+    mode: 'draft',
   });
   if (!validation.ok) {
     throw new Error(validation.errors.join('; '));
@@ -313,12 +319,91 @@ export async function prepareManualArticleForPublish(
     };
   }
 
-  await updateArticleStatus(articleId, 'review');
   return {
     ok: true,
-    message: 'SEO generated — article ready for publish review',
-    status: 'review',
+    message: 'SEO package generated',
+    status: article.status,
   };
+}
+
+/** Validate, generate SEO if needed, and publish a manual article directly (no review queue). */
+export async function publishManualArticleService(
+  articleId: number
+): Promise<import('../publish/publish.js').PublishResult> {
+  const article = await getArticleById(articleId);
+  if (!article) {
+    return {
+      ok: false,
+      article_id: articleId,
+      status: 'missing',
+      message: 'Article not found',
+      errors: [{ code: 'article_not_found', message: 'Article not found' }],
+    };
+  }
+  if (!isManualArticle(article)) {
+    return {
+      ok: false,
+      article_id: articleId,
+      status: article.status,
+      message: 'Only manual articles can use direct manual publish',
+      errors: [{ code: 'not_manual', message: 'Not a manual article' }],
+    };
+  }
+  if (article.status === 'published') {
+    return {
+      ok: true,
+      article_id: articleId,
+      status: 'published',
+      slug: article.slug,
+      message: 'Already published',
+    };
+  }
+
+  const settings = await getSettings();
+  const draft =
+    article.draft_json && typeof article.draft_json === 'object'
+      ? (article.draft_json as WriterDraftPayload)
+      : {
+          seo_title: article.seo_title || '',
+          meta_title: article.meta_title || '',
+          meta_description: article.meta_description || '',
+          excerpt: article.excerpt || '',
+          blocks: Array.isArray(article.blocks_json)
+            ? (article.blocks_json as DraftBlock[])
+            : [],
+        };
+
+  const validation = validateManualDraft(draft, {
+    minWords: 50,
+    maxWords: settings.article_length_max,
+    mode: 'publish',
+  });
+  if (!validation.ok) {
+    return {
+      ok: false,
+      article_id: articleId,
+      status: article.status,
+      message: validation.errors.join('; '),
+      errors: validation.errors.map((e) => ({ code: 'validation', message: e })),
+    };
+  }
+
+  const seo = await generateArticleSeo(articleId, { skipAiPolish: true });
+  if (!seo.ok) {
+    return {
+      ok: false,
+      article_id: articleId,
+      status: article.status,
+      message: seo.message || 'SEO generation failed — check title, excerpt, and meta description',
+      errors: (seo.errors || [seo.message]).map((m) => ({
+        code: 'seo_failed',
+        message: String(m),
+      })),
+    };
+  }
+
+  const { publishArticle } = await import('../publish/publish.js');
+  return publishArticle(articleId);
 }
 
 export async function uploadManualFeaturedImage(input: {

@@ -16,6 +16,7 @@ import {
   extractFeaturedImage,
 } from './manual-html-blocks';
 import RichTextEditor, { htmlToPlainWordCount } from './RichTextEditor';
+import ManualBlogPreviewModal from './ManualBlogPreviewModal';
 import {
   Badge,
   Button,
@@ -50,6 +51,16 @@ const CONTENT_TYPES = [
 ];
 
 const WORDS_PER_MINUTE = 220;
+
+function parseSlugError(message: string): boolean {
+  return /slug .+ is already in use/i.test(message);
+}
+
+function formatActionError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) return err.message;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
 
 function slugifyClient(title: string): string {
   return title
@@ -129,13 +140,38 @@ export default function ManualBlogEditor({
 
   const [busy, setBusy] = useState<'save' | 'prepare' | 'publish' | 'seo' | 'upload' | null>(null);
   const [error, setError] = useState('');
+  const [slugError, setSlugError] = useState('');
   const [message, setMessage] = useState('');
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [savedArticleId, setSavedArticleId] = useState<number | undefined>(articleId);
   const [seoSuggestion, setSeoSuggestion] = useState<ManualSeoSuggestion | null>(null);
   const [confirmReplaceSeo, setConfirmReplaceSeo] = useState(false);
   const [confirmSlugChange, setConfirmSlugChange] = useState(false);
   const [pendingSlug, setPendingSlug] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const errorBannerRef = useRef<HTMLDivElement>(null);
   const initialSlugRef = useRef(initial?.slug || '');
+
+  const effectiveArticleId = savedArticleId ?? articleId;
+
+  const showError = useCallback((msg: string, slugMsg?: string) => {
+    setMessage('');
+    setError(msg);
+    setSlugError(slugMsg || (parseSlugError(msg) ? msg : ''));
+    window.requestAnimationFrame(() => {
+      errorBannerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
+
+  const showSuccess = useCallback((msg: string) => {
+    setError('');
+    setSlugError('');
+    setMessage(msg);
+  }, []);
+
+  useEffect(() => {
+    if (articleId) setSavedArticleId(articleId);
+  }, [articleId]);
 
   useEffect(() => {
     if (!slugTouched && seoTitle.trim()) {
@@ -154,23 +190,21 @@ export default function ManualBlogEditor({
       (slugTouched && slug.trim())
   );
 
-  const buildPayload = useCallback(() => {
+  const buildSavePayload = useCallback(() => {
     const blocks = editorHtmlToBlocks(editorHtml);
     if (!blocks.length) throw new Error('Add some content to your article.');
     const title = seoTitle.trim();
     if (!title) throw new Error('Blog title is required');
-    if (!metaDescription.trim()) throw new Error('Meta description is required');
-    if (!excerpt.trim()) throw new Error('Excerpt is required');
     const finalSlug = (slug.trim() || slugifyClient(title)).trim();
-    if (!finalSlug || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(finalSlug)) {
-      throw new Error('Slug must be lowercase letters, numbers, and hyphens only');
+    if (finalSlug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(finalSlug)) {
+      throw new Error('Slug must use lowercase letters, numbers, and hyphens only');
     }
     return {
       seo_title: title,
       meta_title: (metaTitle.trim() || title).trim(),
-      meta_description: metaDescription.trim(),
-      excerpt: excerpt.trim(),
-      slug: finalSlug,
+      meta_description: metaDescription.trim() || `Draft summary for ${title}`.slice(0, 160),
+      excerpt: excerpt.trim() || title.slice(0, 220),
+      slug: finalSlug || slugifyClient(title),
       content_type: contentType,
       topic_id: topicId ?? undefined,
       blocks,
@@ -190,12 +224,25 @@ export default function ManualBlogEditor({
     primaryKeyword,
   ]);
 
-  const saveDraft = async (): Promise<number | null> => {
+  const buildPublishPayload = useCallback(() => {
+    const payload = buildSavePayload();
+    if (!payload.meta_description.trim()) {
+      throw new Error('Meta description is required before publishing');
+    }
+    if (!payload.excerpt.trim()) {
+      throw new Error('Excerpt is required before publishing');
+    }
+    if (!payload.slug) throw new Error('Slug is required before publishing');
+    return payload;
+  }, [buildSavePayload]);
+
+  const saveDraft = async (opts?: { forPublish?: boolean }): Promise<number | null> => {
     setBusy('save');
     setError('');
+    setSlugError('');
     setMessage('');
     try {
-      const payload = buildPayload();
+      const payload = opts?.forPublish ? buildPublishPayload() : buildSavePayload();
       if (
         articleStatus === 'published' &&
         payload.slug !== initialSlugRef.current &&
@@ -205,44 +252,30 @@ export default function ManualBlogEditor({
         setConfirmSlugChange(true);
         return null;
       }
-      if (mode === 'create') {
+      const id = effectiveArticleId;
+      if (mode === 'create' && !id) {
         const result = await api.post<{ article_id: number; slug: string }>(
           '/api/editorial/articles/manual',
           payload
         );
-        setMessage('Draft saved');
+        setSavedArticleId(result.article_id);
+        showSuccess('Draft saved');
         onSaved?.(result.article_id, 'Draft created');
         return result.article_id;
       }
-      if (!articleId) throw new Error('Missing article id');
+      const targetId = id;
+      if (!targetId) throw new Error('Save the draft first');
       await api.put<{ ok: true; word_count: number }>(
-        `/api/editorial/articles/${articleId}/manual`,
+        `/api/editorial/articles/${targetId}/manual`,
         payload
       );
-      setMessage(`Draft saved · ${wordCount} words`);
-      onSaved?.(articleId, 'Draft saved');
-      return articleId;
+      showSuccess(`Draft saved · ${wordCount} words`);
+      onSaved?.(targetId, 'Draft saved');
+      return targetId;
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Save failed');
+      const msg = formatActionError(err, 'Unable to save draft');
+      showError(msg, parseSlugError(msg) ? msg : '');
       return null;
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const preparePublish = async (id: number) => {
-    setBusy('prepare');
-    setError('');
-    try {
-      const result = await api.post<{ ok: boolean; message: string }>(
-        `/api/editorial/articles/${id}/prepare-manual-publish`
-      );
-      if (!result.ok) throw new Error(result.message || 'Prepare failed');
-      setMessage(result.message);
-      return true;
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Prepare failed');
-      return false;
     } finally {
       setBusy(null);
     }
@@ -250,39 +283,60 @@ export default function ManualBlogEditor({
 
   const publish = async () => {
     setError('');
-    const id = await saveDraft();
+    setSlugError('');
+    const id = await saveDraft({ forPublish: true });
     if (!id) return;
 
     setBusy('publish');
     try {
-      const prepared = await preparePublish(id);
-      if (!prepared) return;
-      const result = await api.post<{ ok: boolean; message: string; errors?: Array<{ message: string }> }>(
-        `/api/editorial/articles/${id}/publish`
-      );
+      const result = await api.post<{
+        ok: boolean;
+        message: string;
+        errors?: Array<{ message: string }>;
+        slug?: string;
+      }>(`/api/editorial/articles/${id}/manual/publish`);
       if (!result.ok) {
         const detail = result.errors?.map((e) => e.message).join('; ');
-        throw new Error(detail || result.message || 'Publish failed');
+        throw new Error(detail || result.message || 'Unable to publish article');
       }
-      setMessage('Published — live at /blog/' + slug);
+      showSuccess(`Published — live at /blog/${result.slug || slug}`);
       onPublished?.();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Publish failed');
+      showError(formatActionError(err, 'Unable to publish article'));
     } finally {
       setBusy(null);
     }
   };
 
   const handlePreview = async () => {
-    const id = await saveDraft();
-    if (id) onPreview?.(id);
+    setError('');
+    setSlugError('');
+    try {
+      const blocks = editorHtmlToBlocks(editorHtml);
+      if (!blocks.length) {
+        showError('Add some content before previewing');
+        return;
+      }
+      if (!seoTitle.trim()) {
+        showError('Add a blog title before previewing');
+        return;
+      }
+      const id = await saveDraft();
+      if (id) {
+        setPreviewOpen(true);
+        onPreview?.(id);
+      }
+    } catch (err) {
+      showError(formatActionError(err, 'Unable to open preview'));
+    }
   };
 
   const generateSeo = async () => {
     setBusy('seo');
     setError('');
+    setSlugError('');
     try {
-      let id = articleId ?? null;
+      let id = effectiveArticleId ?? null;
       if (!id) {
         id = await saveDraft();
         if (!id) return;
@@ -299,7 +353,7 @@ export default function ManualBlogEditor({
         setConfirmReplaceSeo(true);
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'SEO generation failed');
+      showError(formatActionError(err, 'SEO generation failed — check AI settings and article content'));
     } finally {
       setBusy(null);
     }
@@ -314,27 +368,29 @@ export default function ManualBlogEditor({
     if (!slugTouched || !slug.trim()) {
       setSlug(s.slug);
     }
-    setMessage('SEO fields updated — review and save draft');
     setSeoSuggestion(null);
     setConfirmReplaceSeo(false);
+    showSuccess('SEO fields updated — review and save draft');
   };
 
   const uploadFeaturedImage = async (file: File) => {
-    if (!articleId) {
-      setError('Save the draft first, then upload a featured image');
-      return;
-    }
     if (!file.type.startsWith('image/')) {
-      setError('Please choose an image file');
+      showError('Unable to upload image. Please choose a JPEG, PNG, or WebP file.');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      setError('Image must be under 5MB');
+      showError('Unable to upload image. Maximum file size is 5MB.');
       return;
     }
     setBusy('upload');
     setError('');
+    setSlugError('');
     try {
+      let id = effectiveArticleId ?? null;
+      if (!id) {
+        id = await saveDraft();
+        if (!id) return;
+      }
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
@@ -342,30 +398,31 @@ export default function ManualBlogEditor({
         reader.readAsDataURL(file);
       });
       const result = await api.post<{ featured_image: FeaturedImageState }>(
-        `/api/editorial/articles/${articleId}/featured-image`,
+        `/api/editorial/articles/${id}/featured-image`,
         { data_base64: dataUrl, mime: file.type, alt: seoTitle.slice(0, 120) }
       );
       setFeaturedImage(result.featured_image);
-      setMessage('Featured image uploaded');
+      showSuccess('Featured image uploaded');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Upload failed');
+      showError(formatActionError(err, 'Unable to upload featured image'));
     } finally {
       setBusy(null);
     }
   };
 
   const removeFeaturedImage = async () => {
-    if (!articleId) {
+    const id = effectiveArticleId;
+    if (!id) {
       setFeaturedImage(null);
       return;
     }
     setBusy('upload');
     try {
-      await api.delete(`/api/editorial/articles/${articleId}/featured-image`);
+      await api.delete(`/api/editorial/articles/${id}/featured-image`);
       setFeaturedImage(null);
-      setMessage('Featured image removed');
+      showSuccess('Featured image removed');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Remove failed');
+      showError(formatActionError(err, 'Unable to remove featured image'));
     } finally {
       setBusy(null);
     }
@@ -375,8 +432,19 @@ export default function ManualBlogEditor({
   const qualityScore = preview?.quality_score ?? preview?.quality_panel?.quality_score ?? null;
   const seoScore = preview?.seo_validation?.seo_score ?? preview?.quality_panel?.overall_seo_score ?? null;
 
+  const previewBlocks = useMemo(() => editorHtmlToBlocks(editorHtml), [editorHtml]);
+
   return (
     <div className="space-y-4">
+      <div ref={errorBannerRef} className="space-y-3">
+        {error && (
+          <Callout tone="rose" title="Unable to complete action">
+            {error}
+          </Callout>
+        )}
+        {message && <Callout tone="emerald">{message}</Callout>}
+      </div>
+
       {/* Header actions */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -407,8 +475,8 @@ export default function ManualBlogEditor({
             size="sm"
             variant="accent"
             icon={<Globe className="h-3.5 w-3.5" />}
-            loading={busy === 'publish' || busy === 'prepare'}
-            disabled={busy != null && busy !== 'publish' && busy !== 'prepare'}
+            loading={busy === 'publish'}
+            disabled={busy != null && busy !== 'publish'}
             onClick={() => void publish()}
           >
             Publish
@@ -491,15 +559,20 @@ export default function ManualBlogEditor({
               <Field label="SEO title">
                 <Input value={metaTitle} onChange={(e) => setMetaTitle(e.target.value)} placeholder="Defaults to blog title" />
               </Field>
-              <Field label="Slug">
+              <Field label="Slug" hint={slugError ? undefined : 'Lowercase, hyphen-separated URL'}>
                 <Input
                   value={slug}
                   onChange={(e) => {
                     setSlugTouched(true);
                     setSlug(e.target.value);
+                    if (slugError) setSlugError('');
                   }}
                   placeholder="url-friendly-slug"
+                  aria-invalid={Boolean(slugError)}
                 />
+                {slugError && (
+                  <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{slugError}</p>
+                )}
               </Field>
             </div>
             <Field label="Meta description" hint="150–160 characters recommended">
@@ -636,8 +709,17 @@ export default function ManualBlogEditor({
         </div>
       </div>
 
-      {message && <Callout tone="emerald">{message}</Callout>}
-      {error && <Callout tone="rose">{error}</Callout>}
+      <ManualBlogPreviewModal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title={seoTitle}
+        slug={slug}
+        excerpt={excerpt}
+        blocks={previewBlocks}
+        featuredImage={featuredImage}
+        wordCount={wordCount}
+        readingMinutes={readingMinutes}
+      />
 
       {confirmReplaceSeo && seoSuggestion && (
         <ConfirmDialog

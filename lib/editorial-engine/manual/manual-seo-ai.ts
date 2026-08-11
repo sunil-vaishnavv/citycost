@@ -27,8 +27,8 @@ export async function generateManualSeoSuggestion(input: {
   if (!title) throw new Error('Blog title is required for SEO generation');
 
   const contentText = blocksToPlainText(input.blocks).slice(0, 12000);
-  if (contentText.length < 80) {
-    throw new Error('Add more article content before generating SEO (minimum ~80 words)');
+  if (contentText.split(/\s+/).filter(Boolean).length < 20) {
+    throw new Error('Add more article content before generating SEO (minimum ~20 words)');
   }
 
   const router = getAiRouter();
