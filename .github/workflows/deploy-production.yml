@@ -1,0 +1,91 @@
+name: Deploy Production (AWS)
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: citycost-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to citycost-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PRODUCTION_SSH_KEY:-}" || -z "${PRODUCTION_SSH_HOST:-}" ]]; then
+            echo "Missing PRODUCTION_SSH_KEY or PRODUCTION_SSH_HOST GitHub secrets."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$PRODUCTION_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync application to production
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        run: |
+          set -euo pipefail
+          USER="${PRODUCTION_SSH_USER:-ubuntu}"
+          RSYNC_SSH="ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes"
+          rsync -az --delete \
+            --exclude '.env' \
+            --exclude 'node_modules/' \
+            --exclude 'data/' \
+            --exclude 'dist/' \
+            --exclude '.git/' \
+            --exclude '.deploy-commit' \
+            -e "$RSYNC_SSH" \
+            ./ "${USER}@${PRODUCTION_SSH_HOST}:/opt/citycost/"
+
+      - name: Build and restart on server
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        run: |
+          set -euo pipefail
+          USER="${PRODUCTION_SSH_USER:-ubuntu}"
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes \
+            "${USER}@${PRODUCTION_SSH_HOST}" \
+            "chmod +x /opt/citycost/scripts/deploy-production.sh && /opt/citycost/scripts/deploy-production.sh '${{ github.sha }}'"
+
+      - name: Public health checks
+        run: |
+          set -euo pipefail
+          for url in \
+            "https://citycost.online/health" \
+            "https://citycost.online/api/health" \
+            "https://citycost.online/" \
+            "https://www.citycost.online/health"
+          do
+            echo "Checking $url"
+            code=$(curl -fsS -o /dev/null -w "%{http_code}" "$url")
+            if [[ "$code" != "200" ]]; then
+              echo "Expected HTTP 200, got $code for $url"
+              exit 1
+            fi
+          done
+
+      - name: Verify deploy marker in production HTML
+        run: |
+          set -euo pipefail
+          curl -fsS "https://citycost.online/" | grep -q "citycost-deploy-marker"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "Deployed commit ${{ github.sha }} to https://citycost.online"

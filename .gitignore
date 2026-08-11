@@ -37,6 +37,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Server-only deploy metadata (written by scripts/deploy-production.sh)
+.deploy-commit
+
 # Optional local tooling
 *.pem
 .turbo/
