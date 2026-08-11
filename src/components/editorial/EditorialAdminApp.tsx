@@ -23,6 +23,7 @@ import TopicsPanel from './TopicsPanel';
 import AutomationPanel from './AutomationPanel';
 import SettingsPanel from './SettingsPanel';
 import { JobCenterDropdown, JobsProvider, useEditorialJobs } from './jobs/JobsProvider';
+import { adminPageFromPath, adminPathForPage, navigateArticles } from './admin-routes';
 
 export type AdminPage = 'dashboard' | 'articles' | 'topics' | 'automation' | 'settings';
 
@@ -139,10 +140,21 @@ function HeaderJobsButton() {
 
 export default function EditorialAdminApp() {
   const [token, setToken] = useState<string | null>(() => getAuthToken());
-  const [page, setPage] = useState<AdminPage>('dashboard');
+  const [page, setPage] = useState<AdminPage>(() => adminPageFromPath(window.location.pathname));
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const { dark, toggle: toggleTheme } = useTheme();
+
+  useEffect(() => {
+    const onPop = () => setPage(adminPageFromPath(window.location.pathname));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  const navigatePage = (next: AdminPage) => {
+    setPage(next);
+    window.history.pushState({ editorialPage: next }, '', adminPathForPage(next));
+  };
 
   const logout = async () => {
     await apiLogout();
@@ -153,6 +165,7 @@ export default function EditorialAdminApp() {
 
   const openArticle = (articleId: number) => {
     setPage('articles');
+    navigateArticles({ view: 'detail', articleId });
     try {
       sessionStorage.setItem('editorial_open_article_id', String(articleId));
       window.dispatchEvent(new CustomEvent('editorial:open-article', { detail: { articleId } }));
@@ -220,7 +233,7 @@ export default function EditorialAdminApp() {
                 type="button"
                 title={collapsed ? item.label : undefined}
                 onClick={() => {
-                  setPage(item.key);
+                  navigatePage(item.key);
                   setMobileNavOpen(false);
                 }}
                 className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${
@@ -294,9 +307,9 @@ export default function EditorialAdminApp() {
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
           <div key={page} className="editorial-fade-in">
-            {page === 'dashboard' && <DashboardPanel onNavigate={setPage} />}
+            {page === 'dashboard' && <DashboardPanel onNavigate={navigatePage} />}
             {page === 'articles' && <ArticlesPanel />}
-            {page === 'topics' && <TopicsPanel onNavigate={(p) => setPage(p)} />}
+            {page === 'topics' && <TopicsPanel onNavigate={navigatePage} />}
             {page === 'automation' && <AutomationPanel />}
             {page === 'settings' && <SettingsPanel />}
           </div>

@@ -33,6 +33,11 @@ import {
   StatusPill,
 } from './ui';
 import ArticleDetailPanel from './ArticleDetailPanel';
+import {
+  navigateArticles,
+  parseArticlesRoute,
+  type ArticlesRoute,
+} from './admin-routes';
 
 const STATUS_OPTIONS = [
   'draft',
@@ -72,9 +77,10 @@ export default function ArticlesPanel() {
   const [offset, setOffset] = useState(0);
   const limit = 24;
 
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [articlesRoute, setArticlesRoute] = useState<ArticlesRoute>(() =>
+    parseArticlesRoute(window.location.pathname)
+  );
   const [showGenerate, setShowGenerate] = useState(false);
-  const [showManualCreate, setShowManualCreate] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Article | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -109,13 +115,36 @@ export default function ArticlesPanel() {
   }, [q, status, source, offset]);
 
   useEffect(() => {
+    const syncRoute = () => setArticlesRoute(parseArticlesRoute(window.location.pathname));
+    syncRoute();
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, []);
+
+  const goToArticlesList = useCallback(() => {
+    navigateArticles({ view: 'list' });
+    setArticlesRoute({ view: 'list' });
+  }, []);
+
+  const openArticle = useCallback((articleId: number) => {
+    const route: ArticlesRoute = { view: 'detail', articleId };
+    navigateArticles(route);
+    setArticlesRoute(route);
+  }, []);
+
+  const openManualCreate = useCallback(() => {
+    navigateArticles({ view: 'new' });
+    setArticlesRoute({ view: 'new' });
+  }, []);
+
+  useEffect(() => {
     const openStored = () => {
       try {
         const raw = sessionStorage.getItem('editorial_open_article_id');
         if (raw) {
           const id = Number(raw);
           if (Number.isFinite(id)) {
-            setSelectedId(id);
+            openArticle(id);
             sessionStorage.removeItem('editorial_open_article_id');
           }
         }
@@ -126,11 +155,11 @@ export default function ArticlesPanel() {
     openStored();
     const onOpen = (ev: Event) => {
       const detail = (ev as CustomEvent<{ articleId: number }>).detail;
-      if (detail?.articleId) setSelectedId(detail.articleId);
+      if (detail?.articleId) openArticle(detail.articleId);
     };
     window.addEventListener('editorial:open-article', onOpen);
     return () => window.removeEventListener('editorial:open-article', onOpen);
-  }, []);
+  }, [openArticle]);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
@@ -141,7 +170,9 @@ export default function ArticlesPanel() {
         confirm_slug: deleteTarget.status === 'published' ? deleteTarget.slug : undefined,
       });
       setDeleteTarget(null);
-      if (selectedId === deleteTarget.id) setSelectedId(null);
+      if (deleteTarget && articlesRoute.view === 'detail' && articlesRoute.articleId === deleteTarget.id) {
+        goToArticlesList();
+      }
       void load();
     } catch (err) {
       setDeleteError(err instanceof ApiError ? err.message : 'Delete failed');
@@ -150,16 +181,44 @@ export default function ArticlesPanel() {
     }
   };
 
-  if (selectedId != null) {
+  if (articlesRoute.view === 'new') {
     return (
       <div className="space-y-4">
-        <Button size="sm" variant="ghost" icon={<ArrowLeft className="h-3.5 w-3.5" />} onClick={() => setSelectedId(null)}>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={<ArrowLeft className="h-3.5 w-3.5" />}
+          onClick={goToArticlesList}
+        >
+          Back to articles
+        </Button>
+        <SectionHeader
+          eyebrow="Manual"
+          title="Create Manual Blog"
+          description="Write, format, and publish a blog post without the AI drafting pipeline."
+        />
+        <ManualBlogEditor
+          mode="create"
+          onCancel={goToArticlesList}
+          onSaved={(articleId) => {
+            void load();
+            openArticle(articleId);
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (articlesRoute.view === 'detail') {
+    return (
+      <div className="space-y-4">
+        <Button size="sm" variant="ghost" icon={<ArrowLeft className="h-3.5 w-3.5" />} onClick={goToArticlesList}>
           Back to articles
         </Button>
         <ArticleDetailPanel
-          articleId={selectedId}
+          articleId={articlesRoute.articleId}
           onChanged={() => void load()}
-          onNavigateArticle={(id) => setSelectedId(id)}
+          onNavigateArticle={openArticle}
         />
       </div>
     );
@@ -179,7 +238,7 @@ export default function ArticlesPanel() {
               size="sm"
               variant="outline"
               icon={<PenLine className="h-3.5 w-3.5" />}
-              onClick={() => setShowManualCreate(true)}
+              onClick={openManualCreate}
             >
               Create Manual Blog
             </Button>
@@ -263,7 +322,7 @@ export default function ArticlesPanel() {
                 key={a.id}
                 article={a}
                 readMins={readingMinutesFor(a)}
-                onOpen={() => setSelectedId(a.id)}
+                onOpen={() => openArticle(a.id)}
                 onDelete={() => {
                   setDeleteError('');
                   setDeleteTarget(a);
@@ -288,40 +347,13 @@ export default function ArticlesPanel() {
         </div>
       )}
 
-      {showManualCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4 backdrop-blur-sm">
-          <div className="editorial-fade-in max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-slate-950 sm:p-6">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">Create Manual Blog</h2>
-              <button
-                type="button"
-                onClick={() => setShowManualCreate(false)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5"
-                aria-label="Close"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <ManualBlogEditor
-              mode="create"
-              onCancel={() => setShowManualCreate(false)}
-              onSaved={(articleId) => {
-                setShowManualCreate(false);
-                void load();
-                setSelectedId(articleId);
-              }}
-            />
-          </div>
-        </div>
-      )}
-
       {showGenerate && (
         <GenerateDraftModal
           onClose={() => setShowGenerate(false)}
           onGenerated={(articleId) => {
             setShowGenerate(false);
             void load();
-            setSelectedId(articleId);
+            openArticle(articleId);
           }}
         />
       )}
