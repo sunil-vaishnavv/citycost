@@ -144,6 +144,13 @@ function RenderFaq({ content }: { content: unknown }) {
   );
 }
 
+function RenderTableCell({ cell }: { cell: string }) {
+  if (containsHtml(cell)) {
+    return <ProseHtml html={cell} />;
+  }
+  return <>{cell}</>;
+}
+
 function RenderTable({ content }: { content: unknown }) {
   if (!content || typeof content !== 'object' || Array.isArray(content)) {
     return <p className="text-slate-500 dark:text-slate-400">Table data unavailable.</p>;
@@ -168,12 +175,12 @@ function RenderTable({ content }: { content: unknown }) {
         {headers.length > 0 && (
           <thead className="bg-slate-50 dark:bg-white/[0.04]">
             <tr>
-              {headers.map((h) => (
+              {headers.map((h, i) => (
                 <th
-                  key={h}
+                  key={`h-${i}`}
                   className="border-b border-slate-200 px-3 py-2 font-semibold text-slate-800 dark:border-white/10 dark:text-slate-100"
                 >
-                  {h}
+                  <RenderTableCell cell={h} />
                 </th>
               ))}
             </tr>
@@ -190,7 +197,7 @@ function RenderTable({ content }: { content: unknown }) {
                   key={`c-${i}-${j}`}
                   className="border-b border-slate-100 px-3 py-2 text-slate-700 dark:border-white/5 dark:text-slate-300"
                 >
-                  {cell}
+                  <RenderTableCell cell={cell} />
                 </td>
               ))}
             </tr>

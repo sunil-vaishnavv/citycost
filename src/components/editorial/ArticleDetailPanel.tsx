@@ -950,15 +950,15 @@ export default function ArticleDetailPanel({
         </div>
       )}
 
-      <div className={manualArticle && preview.status !== 'published' ? '' : 'grid lg:grid-cols-[1fr_240px]'}>
+      <div className={manualArticle && (preview.status !== 'published' || contentEditOpen) ? '' : 'grid lg:grid-cols-[1fr_240px]'}>
         <div
           className={
-            manualArticle && preview.status !== 'published'
+            manualArticle && (preview.status !== 'published' || contentEditOpen)
               ? 'p-5'
               : 'min-h-[420px] space-y-5 p-5'
           }
         >
-          {manualArticle && preview.status !== 'published' && (
+          {manualArticle && (preview.status !== 'published' || contentEditOpen) && (
             <ManualBlogEditor
               mode="edit"
               articleId={articleId}
@@ -984,25 +984,15 @@ export default function ArticleDetailPanel({
               onPreview={() => setBlogPreviewOpen(true)}
               onPublished={() => {
                 setMessage('Published successfully');
-                void load();
-                onChanged?.();
-              }}
-            />
-          )}
-
-          {manualArticle && preview.status === 'published' && contentEditOpen && (
-            <PublishedContentEditor
-              articleId={articleId}
-              preview={preview}
-              rawDraft={raw?.draft_json}
-              disabled={actionsLocked}
-              onSaved={(msg) => {
-                setMessage(msg);
                 setContentEditOpen(false);
                 void load();
                 onChanged?.();
               }}
-              onCancel={() => setContentEditOpen(false)}
+              onCancel={
+                preview.status === 'published' && contentEditOpen
+                  ? () => setContentEditOpen(false)
+                  : undefined
+              }
             />
           )}
 
@@ -1532,7 +1522,7 @@ export default function ArticleDetailPanel({
         </div>
 
         {/* Simplified right sidebar — manual drafts use editor sidebar instead */}
-        {!(manualArticle && preview.status !== 'published') && (
+        {!(manualArticle && (preview.status !== 'published' || contentEditOpen)) && (
         <aside className="space-y-3 border-t border-slate-100 bg-slate-50/70 p-4 lg:border-t-0 lg:border-l dark:border-white/10 dark:bg-white/[0.02]">
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
             Quality panel

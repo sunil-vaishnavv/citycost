@@ -49,6 +49,14 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/** Preserve rich-text markup in table cells saved from TipTap innerHTML. */
+function cellToEditorHtml(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (containsHtml(trimmed)) return trimmed;
+  return escapeHtml(trimmed);
+}
+
 function blockContentString(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map(String).join('\n');
@@ -227,10 +235,10 @@ export function blocksToEditorHtml(blocks: DraftBlock[]): string {
       const t = tableFromContent(b.content);
       if (t) {
         const head = t.headers.length
-          ? `<thead><tr>${t.headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>`
+          ? `<thead><tr>${t.headers.map((h) => `<th>${cellToEditorHtml(h)}</th>`).join('')}</tr></thead>`
           : '';
         const body = t.rows
-          .map((row) => `<tr>${row.map((c) => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`)
+          .map((row) => `<tr>${row.map((c) => `<td>${cellToEditorHtml(c)}</td>`).join('')}</tr>`)
           .join('');
         parts.push(`<table>${head}<tbody>${body}</tbody></table>`);
       }

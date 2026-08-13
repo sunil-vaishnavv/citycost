@@ -449,12 +449,16 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
                           {table.headers && (
                             <thead>
                               <tr className="bg-slate-900 text-white dark:bg-teal-900">
-                                {table.headers.map((h) => (
+                                {table.headers.map((h, hi) => (
                                   <th
-                                    key={h}
+                                    key={hi}
                                     className="px-4 py-3 text-xs font-bold uppercase tracking-wide"
                                   >
-                                    {h}
+                                    {containsHtml(h) ? (
+                                      <ProseHtml html={h} />
+                                    ) : (
+                                      h
+                                    )}
                                   </th>
                                 ))}
                               </tr>
@@ -477,12 +481,16 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
                                       ci === 0 ? 'font-semibold text-slate-900 dark:text-white' : ''
                                     }`}
                                   >
-                                    <RichText
-                                      text={cell}
-                                      links={links}
-                                      used={used}
-                                      onNavigate={onNavigate}
-                                    />
+                                    {containsHtml(cell) ? (
+                                      <ProseHtml html={cell} />
+                                    ) : (
+                                      <RichText
+                                        text={cell}
+                                        links={links}
+                                        used={used}
+                                        onNavigate={onNavigate}
+                                      />
+                                    )}
                                   </td>
                                 ))}
                               </tr>

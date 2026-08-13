@@ -126,6 +126,11 @@ function renderList(
   return `<${tag}>${lis}</${tag}>`;
 }
 
+function renderTableCell(cell: string): string {
+  if (containsHtml(cell)) return sanitizeRichHtml(cell);
+  return esc(cell);
+}
+
 function renderTable(content: unknown): string {
   if (!content || typeof content !== 'object') return `<p>${esc(String(content || ''))}</p>`;
   const obj = content as { headers?: string[]; rows?: unknown[]; columns?: string[] };
@@ -153,13 +158,13 @@ function renderTable(content: unknown): string {
   const head = headers
     ? `<thead><tr>${headers
         .slice(0, colCount)
-        .map((h) => `<th>${esc(h)}</th>`)
+        .map((h) => `<th>${renderTableCell(h)}</th>`)
         .join('')}</tr></thead>`
     : '';
   const body = normalized
     .map(
       (r) =>
-        `<tr>${Array.from({ length: colCount }, (_, i) => `<td>${esc(r[i] ?? '')}</td>`).join(
+        `<tr>${Array.from({ length: colCount }, (_, i) => `<td>${renderTableCell(r[i] ?? '')}</td>`).join(
           ''
         )}</tr>`
     )
