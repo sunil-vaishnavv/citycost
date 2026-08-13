@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure SSH
         env:
@@ -25,14 +25,19 @@ jobs:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
         run: |
           set -euo pipefail
+          echo "Configuring SSH for production deploy"
           if [[ -z "${PRODUCTION_SSH_KEY:-}" || -z "${PRODUCTION_SSH_HOST:-}" ]]; then
-            echo "Missing PRODUCTION_SSH_KEY or PRODUCTION_SSH_HOST GitHub secrets."
+            echo "ERROR: Missing PRODUCTION_SSH_KEY or PRODUCTION_SSH_HOST GitHub secrets."
             exit 1
           fi
+          echo "SSH host: ${PRODUCTION_SSH_HOST}"
+          echo "SSH key file: ~/.ssh/id_deploy"
           mkdir -p ~/.ssh
           printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
+          echo "Running: ssh-keyscan -H \"${PRODUCTION_SSH_HOST}\""
           ssh-keyscan -H "$PRODUCTION_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SSH configuration complete"
 
       - name: Sync application to production
         env:
@@ -41,7 +46,12 @@ jobs:
         run: |
           set -euo pipefail
           USER="${PRODUCTION_SSH_USER:-ubuntu}"
+          TARGET="${USER}@${PRODUCTION_SSH_HOST}:/opt/citycost/"
           RSYNC_SSH="ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes"
+          echo "Syncing repository to production"
+          echo "  Source: ./"
+          echo "  Target: ${TARGET}"
+          echo "  Command: rsync -az --delete (with excludes) -e \"${RSYNC_SSH}\""
           rsync -az --delete \
             --exclude '.env' \
             --exclude 'node_modules/' \
@@ -50,7 +60,8 @@ jobs:
             --exclude '.git/' \
             --exclude '.deploy-commit' \
             -e "$RSYNC_SSH" \
-            ./ "${USER}@${PRODUCTION_SSH_HOST}:/opt/citycost/"
+            ./ "${TARGET}"
+          echo "Rsync completed successfully"
 
       - name: Build and restart on server
         env:
@@ -59,31 +70,114 @@ jobs:
         run: |
           set -euo pipefail
           USER="${PRODUCTION_SSH_USER:-ubuntu}"
+          REMOTE="${USER}@${PRODUCTION_SSH_HOST}"
+          DEPLOY_SHA="${{ github.sha }}"
+          REMOTE_CMD="chmod +x /opt/citycost/scripts/deploy-production.sh && /opt/citycost/scripts/deploy-production.sh '${DEPLOY_SHA}'"
+          echo "Running remote deploy script"
+          echo "  Host: ${REMOTE}"
+          echo "  Commit: ${DEPLOY_SHA}"
+          echo "  Command: ${REMOTE_CMD}"
           ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes \
-            "${USER}@${PRODUCTION_SSH_HOST}" \
-            "chmod +x /opt/citycost/scripts/deploy-production.sh && /opt/citycost/scripts/deploy-production.sh '${{ github.sha }}'"
+            "${REMOTE}" \
+            "${REMOTE_CMD}"
+          echo "Remote build and restart completed"
 
       - name: Public health checks
         run: |
           set -euo pipefail
+          TMP_DIR="${RUNNER_TEMP:-/tmp}/citycost-health"
+          mkdir -p "${TMP_DIR}"
+
+          check_url() {
+            local url="$1"
+            local err_file="${TMP_DIR}/curl-$(echo -n "$url" | cksum | awk '{print $1}').err"
+            local body_file="${TMP_DIR}/body-$(echo -n "$url" | cksum | awk '{print $1}').html"
+            echo "Checking ${url}"
+            local code
+            code=$(curl -sS -L --retry 3 --retry-delay 2 \
+              -o "${body_file}" \
+              -w "%{http_code}" \
+              "${url}" 2>"${err_file}") || {
+              echo "ERROR: curl failed for ${url} (exit $?)"
+              if [[ -s "${err_file}" ]]; then
+                echo "curl stderr:"
+                cat "${err_file}"
+              fi
+              return 1
+            }
+            echo "  HTTP ${code} · $(wc -c < "${body_file}" | tr -d ' ') bytes"
+            if [[ "${code}" != "200" ]]; then
+              echo "ERROR: Expected HTTP 200, got ${code} for ${url}"
+              echo "Response preview:"
+              head -c 500 "${body_file}" || true
+              echo
+              return 1
+            fi
+          }
+
           for url in \
             "https://citycost.online/health" \
             "https://citycost.online/api/health" \
             "https://citycost.online/" \
             "https://www.citycost.online/health"
           do
-            echo "Checking $url"
-            code=$(curl -fsS -o /dev/null -w "%{http_code}" "$url")
-            if [[ "$code" != "200" ]]; then
-              echo "Expected HTTP 200, got $code for $url"
-              exit 1
-            fi
+            check_url "${url}"
           done
+          echo "All public health checks passed"
 
       - name: Verify deploy marker in production HTML
         run: |
           set -euo pipefail
-          curl -fsS "https://citycost.online/" | grep -q "citycost-deploy-marker"
+          MARKER="citycost-deploy-marker"
+          URL="https://citycost.online/"
+          TMP_DIR="${RUNNER_TEMP:-/tmp}/citycost-deploy-verify"
+          HTML_FILE="${TMP_DIR}/homepage.html"
+          ERR_FILE="${TMP_DIR}/curl.err"
+
+          echo "Verifying deploy marker in production HTML"
+          echo "  URL: ${URL}"
+          echo "  Marker: ${MARKER}"
+          echo "  Output directory: ${TMP_DIR}"
+          echo "  Output file: ${HTML_FILE}"
+
+          mkdir -p "${TMP_DIR}"
+
+          # Write to a file instead of piping to grep — piping with pipefail causes
+          # curl exit 23 (CURLE_WRITE_ERROR) when grep -q closes the pipe early.
+          if ! curl -fsSL --retry 3 --retry-delay 2 \
+            -o "${HTML_FILE}" \
+            "${URL}" 2>"${ERR_FILE}"; then
+            curl_exit=$?
+            echo "ERROR: curl failed (exit ${curl_exit}) downloading ${URL}"
+            if [[ -s "${ERR_FILE}" ]]; then
+              echo "curl stderr:"
+              cat "${ERR_FILE}"
+            fi
+            if [[ -f "${HTML_FILE}" ]]; then
+              echo "Partial response ($(wc -c < "${HTML_FILE}" | tr -d ' ') bytes, first 500 chars):"
+              head -c 500 "${HTML_FILE}" || true
+              echo
+            fi
+            exit 1
+          fi
+
+          bytes=$(wc -c < "${HTML_FILE}" | tr -d ' ')
+          echo "Downloaded ${bytes} bytes from ${URL}"
+
+          if [[ "${bytes}" -eq 0 ]]; then
+            echo "ERROR: Empty HTML response from ${URL}"
+            exit 1
+          fi
+
+          if ! grep -q "${MARKER}" "${HTML_FILE}"; then
+            echo "ERROR: Deploy marker '${MARKER}' not found in production HTML"
+            echo "Response preview (first 800 chars):"
+            head -c 800 "${HTML_FILE}" || true
+            echo
+            exit 1
+          fi
+
+          echo "Deploy marker '${MARKER}' found — production HTML verified"
 
       - name: Deployment summary
         if: success()

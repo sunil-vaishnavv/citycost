@@ -13,6 +13,10 @@ cd "$APP_DIR"
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
 
+log "Working directory: $APP_DIR"
+log "PM2 app: $PM2_APP"
+log "Health endpoints: $HEALTH_LOCAL · $API_HEALTH_LOCAL"
+
 if [[ ! -f .env ]]; then
   log "ERROR: $APP_DIR/.env is missing — aborting (will not restart PM2)"
   exit 1
@@ -22,9 +26,11 @@ log "Deploy commit: $DEPLOY_COMMIT"
 log "Node $(node -v) · npm $(npm -v)"
 
 log "Installing dependencies (npm ci)..."
+log "Command: npm ci"
 npm ci
 
 log "Building (npm run build)..."
+log "Command: npm run build"
 npm run build
 
 if [[ ! -f dist/index.html ]]; then
@@ -33,9 +39,11 @@ if [[ ! -f dist/index.html ]]; then
 fi
 
 echo "$DEPLOY_COMMIT" > .deploy-commit
+log "Wrote deploy commit to $APP_DIR/.deploy-commit"
 chmod 600 .deploy-commit 2>/dev/null || true
 
 log "Restarting PM2 ($PM2_APP)..."
+log "Command: pm2 restart $PM2_APP --update-env"
 pm2 restart "$PM2_APP" --update-env
 
 log "Waiting for health endpoints..."
@@ -61,7 +69,8 @@ if ! sudo nginx -t >/dev/null 2>&1; then
 fi
 
 log "Local health OK"
-curl -fsS "$HEALTH_LOCAL" | head -c 200
+health_body=$(curl -fsS "$HEALTH_LOCAL")
+echo "${health_body:0:200}"
 echo
 pm2 status "$PM2_APP"
 log "Deploy succeeded: $DEPLOY_COMMIT"
