@@ -142,11 +142,11 @@ export function ContentHero({
             {eyebrow}
           </div>
         )}
-        <h1 className="max-w-4xl font-display text-3xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-4xl sm:leading-tight">
+        <h1 className="w-full font-display text-3xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-4xl sm:leading-tight">
           {title}
         </h1>
         {intro && (
-          <p className="mt-5 max-w-3xl text-base leading-relaxed text-slate-600 dark:text-slate-300 sm:text-lg">
+          <p className="mt-5 w-full text-base leading-relaxed text-slate-600 dark:text-slate-300 sm:text-lg">
             {intro}
           </p>
         )}
