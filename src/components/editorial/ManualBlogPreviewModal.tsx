@@ -79,7 +79,7 @@ export default function ManualBlogPreviewModal({
               <img
                 src={featuredImage.url}
                 alt={featuredImage.alt || title || 'Featured'}
-                className="mt-5 aspect-[16/9] w-full rounded-xl border border-slate-200 object-cover dark:border-white/10"
+                className="mt-5 h-auto w-full max-w-full rounded-xl border border-slate-200 dark:border-white/10"
               />
             )}
             <p className="mt-2 text-xs text-slate-400">

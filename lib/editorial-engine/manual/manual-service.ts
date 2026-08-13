@@ -121,6 +121,8 @@ async function persistManualArticleContent(input: {
         block_count: draft.blocks.length,
         manual: true,
       },
+    }).catch(() => {
+      /* non-blocking audit log */
     });
     invalidateBlogPublicCache();
     return;
@@ -299,6 +301,7 @@ export async function updateManualArticleService(
     semantic_keywords?: string[];
   }
 ): Promise<{ ok: true; word_count: number; blocks: DraftBlock[]; draft_json: ManualDraftPayload }> {
+  const t0 = Date.now();
   const article = await getArticleById(articleId);
   if (!article) throw new Error('Article not found');
   if (!isManualArticle(article)) {
@@ -350,6 +353,10 @@ export async function updateManualArticleService(
     reading_time,
   });
 
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[manual-save:${articleId}] ${Date.now() - t0}ms status=${article.status}`);
+  }
+
   return { ok: true, word_count, blocks: draft.blocks, draft_json: draft };
 }
 
@@ -379,6 +386,16 @@ export async function prepareManualArticleForPublish(
     message: 'SEO package generated',
     status: article.status,
   };
+}
+
+import type { SeoPackage } from '../seo/seo-package.js';
+
+function hasUsableSeoPackage(article: NonNullable<Awaited<ReturnType<typeof getArticleById>>>): boolean {
+  const pkg = article.seo_package_json as SeoPackage | null;
+  if (!pkg || typeof pkg !== 'object') return false;
+  const meta = (pkg.meta_description || '').trim();
+  const title = (pkg.seo_title || pkg.meta_title || '').trim();
+  return Boolean(meta && title);
 }
 
 /** Validate, generate SEO if needed, and publish a manual article directly (no review queue). */
@@ -443,18 +460,20 @@ export async function publishManualArticleService(
     };
   }
 
-  const seo = await generateArticleSeo(articleId, { skipAiPolish: true });
-  if (!seo.ok) {
-    return {
-      ok: false,
-      article_id: articleId,
-      status: article.status,
-      message: seo.message || 'SEO generation failed — check title, excerpt, and meta description',
-      errors: (seo.errors || [seo.message]).map((m) => ({
-        code: 'seo_failed',
-        message: String(m),
-      })),
-    };
+  if (!hasUsableSeoPackage(article)) {
+    const seo = await generateArticleSeo(articleId, { skipAiPolish: true });
+    if (!seo.ok) {
+      return {
+        ok: false,
+        article_id: articleId,
+        status: article.status,
+        message: seo.message || 'SEO generation failed — check title, excerpt, and meta description',
+        errors: (seo.errors || [seo.message]).map((m) => ({
+          code: 'seo_failed',
+          message: String(m),
+        })),
+      };
+    }
   }
 
   const { publishArticle } = await import('../publish/publish.js');

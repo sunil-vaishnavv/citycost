@@ -106,7 +106,11 @@ export default function ManualBlogEditor({
   topicId?: number | null;
   articleStatus?: string;
   preview?: ArticlePreview | null;
-  onSaved?: (articleId: number, message: string) => void;
+  onSaved?: (
+    articleId: number,
+    message: string,
+    detail?: { word_count: number; blocks?: ArticleBlock[]; draft_json?: Record<string, unknown> }
+  ) => void;
   onPreview?: (articleId: number) => void;
   onPublished?: () => void;
   onCancel?: () => void;
@@ -273,15 +277,14 @@ export default function ManualBlogEditor({
         blocks?: ArticleBlock[];
         draft_json?: Record<string, unknown>;
       }>(`/api/editorial/articles/${targetId}/manual`, payload);
-      if (result.blocks?.length) {
-        const hydrated = blocksToEditorHtml(result.blocks);
-        setEditorHtml(hydrated);
-        setWordCount(htmlToPlainWordCount(hydrated));
-      }
       if (payload.slug) initialSlugRef.current = payload.slug;
       const savedLabel = articleStatus === 'published' ? 'Changes saved' : 'Draft saved';
       showSuccess(`${savedLabel} · ${result.word_count ?? wordCount} words`);
-      onSaved?.(targetId, savedLabel);
+      onSaved?.(targetId, savedLabel, {
+        word_count: result.word_count ?? wordCount,
+        blocks: result.blocks,
+        draft_json: result.draft_json,
+      });
       return targetId;
     } catch (err) {
       const msg = formatActionError(err, 'Unable to save draft');
@@ -319,12 +322,11 @@ export default function ManualBlogEditor({
     }
   };
 
-  const handlePreview = async () => {
+  const handlePreview = () => {
     setError('');
     setSlugError('');
     try {
-      const blocks = editorHtmlToBlocks(editorHtml);
-      if (!blocks.length) {
+      if (!previewBlocks.length) {
         showError('Add some content before previewing');
         return;
       }
@@ -332,11 +334,9 @@ export default function ManualBlogEditor({
         showError('Add a blog title before previewing');
         return;
       }
-      const id = await saveDraft();
-      if (id) {
-        setPreviewOpen(true);
-        onPreview?.(id);
-      }
+      setPreviewOpen(true);
+      const id = effectiveArticleId ?? articleId;
+      if (id) onPreview?.(id);
     } catch (err) {
       showError(formatActionError(err, 'Unable to open preview'));
     }
@@ -352,10 +352,9 @@ export default function ManualBlogEditor({
         id = await saveDraft();
         if (!id) return;
       }
-      const blocks = editorHtmlToBlocks(editorHtml);
       const result = await api.post<{ ok: boolean; suggestion: ManualSeoSuggestion }>(
         `/api/editorial/articles/${id}/manual/generate-seo`,
-        { seo_title: seoTitle, blocks, excerpt }
+        { seo_title: seoTitle, blocks: previewBlocks, excerpt }
       );
       setSeoSuggestion(result.suggestion);
       if (!hasExistingSeo) {
@@ -637,7 +636,7 @@ export default function ManualBlogEditor({
                 <img
                   src={featuredImage.url}
                   alt={featuredImage.alt || seoTitle}
-                  className="aspect-[16/9] w-full rounded-xl border border-slate-200 object-cover dark:border-white/10"
+                  className="h-auto w-full max-w-full rounded-xl border border-slate-200 dark:border-white/10"
                 />
                 <div className="flex gap-2">
                   <Button

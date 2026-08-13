@@ -367,7 +367,7 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
             <img
               src={article.featured_image.url}
               alt={article.featured_image.alt || title}
-              className="mt-6 max-h-[420px] w-full rounded-2xl border border-slate-200/80 object-cover shadow-sm dark:border-white/10"
+              className="mt-6 h-auto w-full max-w-full rounded-2xl border border-slate-200/80 shadow-sm dark:border-white/10"
               loading="eager"
             />
           )}

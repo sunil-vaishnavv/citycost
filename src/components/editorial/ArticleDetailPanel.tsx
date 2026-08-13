@@ -21,6 +21,7 @@ import {
   ApiError,
   getAuthToken,
   type Article,
+  type ArticleBlock,
   type ArticleObservability,
   type ArticlePreview,
   type ArticleRaw,
@@ -362,6 +363,45 @@ export default function ArticleDetailPanel({
       setError(err instanceof ApiError ? err.message : 'Failed to load article');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const applyManualSavePatch = (
+    msg: string,
+    detail?: { word_count: number; blocks?: ArticleBlock[]; draft_json?: Record<string, unknown> }
+  ) => {
+    setMessage(msg);
+    if (!detail) return;
+    if (detail.word_count != null) {
+      setArticle((a) => (a ? { ...a, word_count: detail.word_count } : a));
+      setPreview((p) =>
+        p
+          ? {
+              ...p,
+              word_count: detail.word_count,
+              blocks: detail.blocks?.length ? detail.blocks : p.blocks,
+              reading_time_minutes: Math.max(1, Math.round(detail.word_count / 220)),
+            }
+          : p
+      );
+    } else if (detail.blocks?.length) {
+      setPreview((p) => (p ? { ...p, blocks: detail.blocks! } : p));
+    }
+    if (detail.draft_json) {
+      setRaw((r) => (r ? { ...r, draft_json: detail.draft_json } : r));
+    }
+  };
+
+  const refreshAfterPublish = async () => {
+    try {
+      const [articleRes, previewRes] = await Promise.all([
+        api.get<{ article: Article }>(`/api/editorial/articles/${articleId}`),
+        api.get<{ preview: ArticlePreview }>(`/api/editorial/articles/${articleId}/preview`),
+      ]);
+      setArticle(articleRes.article);
+      setPreview(previewRes.preview);
+    } catch {
+      /* keep current editor state if refresh fails */
     }
   };
 
@@ -875,7 +915,7 @@ export default function ArticleDetailPanel({
                     <img
                       src={bustFeaturedImageUrl(fi.url, imageVersion)}
                       alt={fi.alt || seo?.seo_title || article.seo_title || 'Featured'}
-                      className="mt-5 aspect-[16/9] w-full rounded-xl border border-slate-200 object-cover dark:border-white/10"
+                      className="mt-5 h-auto w-full max-w-full rounded-xl border border-slate-200 dark:border-white/10"
                     />
                   );
                 })()}
@@ -978,16 +1018,15 @@ export default function ArticleDetailPanel({
                 blocks: preview.blocks,
                 draft_json: raw?.draft_json,
               }}
-              onSaved={(_id, msg) => {
-                setMessage(msg);
-                void load();
+              onSaved={(_id, msg, detail) => {
+                applyManualSavePatch(msg, detail);
                 onChanged?.();
               }}
               onPreview={() => setBlogPreviewOpen(true)}
               onPublished={() => {
                 setMessage('Published successfully');
                 setContentEditOpen(false);
-                void load();
+                void refreshAfterPublish();
                 onChanged?.();
               }}
               onCancel={

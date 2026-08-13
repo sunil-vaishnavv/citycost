@@ -347,6 +347,8 @@ export async function updatePublishedContent(
       block_count: next.blocks.length,
       manual: true,
     },
+  }).catch(() => {
+    /* non-blocking audit log */
   });
 
   invalidateBlogPublicCache();
