@@ -49,6 +49,31 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/** Recover structured HTML when blocks were stored as escaped text. */
+function decodeHtmlEntities(text: string): string {
+  if (!/&(?:lt|gt|amp|quot|#39);/i.test(text)) return text;
+  if (containsHtml(text)) return text;
+  if (typeof document !== 'undefined') {
+    const el = document.createElement('textarea');
+    el.innerHTML = text;
+    return el.value;
+  }
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function paragraphToEditorHtml(inner: string): string {
+  const decoded = decodeHtmlEntities(inner.trim());
+  if (!decoded) return '';
+  if (/^<(p|div|table|ul|ol|blockquote|h[1-4])\b/i.test(decoded)) return decoded;
+  if (containsHtml(decoded)) return `<p>${decoded}</p>`;
+  return `<p>${escapeHtml(decoded).replace(/\n/g, '<br>')}</p>`;
+}
+
 /** Preserve rich-text markup in table cells saved from TipTap innerHTML. */
 function cellToEditorHtml(value: string): string {
   const trimmed = value.trim();
@@ -189,11 +214,18 @@ export function sanitizeRichHtml(html: string): string {
       'ul',
       'ol',
       'li',
+      'h2',
       'h3',
       'h4',
       'blockquote',
       'span',
       'img',
+      'table',
+      'thead',
+      'tbody',
+      'tr',
+      'th',
+      'td',
     ];
     return allowed.includes(name.toLowerCase()) ? tag : '';
   });
@@ -245,23 +277,19 @@ export function blocksToEditorHtml(blocks: DraftBlock[]): string {
       continue;
     }
     if (b.type === 'tip' || b.type === 'warning') {
-      const inner = blockContentString(b.content);
+      const inner = decodeHtmlEntities(blockContentString(b.content));
       if (inner) parts.push(`<blockquote>${inner}</blockquote>`);
       continue;
     }
     if (b.type === 'faq') continue;
 
-    const inner = blockContentString(b.content);
+    const inner = decodeHtmlEntities(blockContentString(b.content));
     if (!inner && !b.heading) continue;
     if (b.heading && b.type !== 'intro' && b.type !== 'paragraph' && b.type !== 'summary') {
       parts.push(`<h2>${escapeHtml(b.heading)}</h2>`);
     }
     if (inner) {
-      if (containsHtml(inner) || inner.includes('<img')) {
-        parts.push(inner.startsWith('<') ? inner : `<p>${inner}</p>`);
-      } else {
-        parts.push(`<p>${escapeHtml(inner).replace(/\n/g, '<br>')}</p>`);
-      }
+      parts.push(paragraphToEditorHtml(inner));
     }
   }
   if (!parts.length) return '<p></p>';
@@ -303,8 +331,8 @@ export function editorHtmlToBlocks(html: string): DraftBlock[] {
       const el = node as HTMLElement;
       const tag = el.tagName.toLowerCase();
 
-      if (tag === 'h2' || tag === 'h3' || tag === 'h4') {
-        const level = Number(tag[1]) || 2;
+      if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4') {
+        const level = tag === 'h1' ? 2 : Number(tag[1]) || 2;
         const text = el.textContent?.trim() || '';
         if (text) {
           blocks.push({

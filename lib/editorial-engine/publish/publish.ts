@@ -152,9 +152,9 @@ const BLOCK_TYPES = new Set<DraftBlockType>([
   'summary',
 ]);
 
-function asExistingDraft(article: Awaited<ReturnType<typeof getArticleById>>): WriterDraftPayload {
+function asExistingDraft(article: Awaited<ReturnType<typeof getArticleById>>): WriterDraftPayload & Record<string, unknown> {
   if (article?.draft_json && typeof article.draft_json === 'object') {
-    return article.draft_json as WriterDraftPayload;
+    return article.draft_json as WriterDraftPayload & Record<string, unknown>;
   }
   const blocks = Array.isArray(article?.blocks_json)
     ? (article.blocks_json as DraftBlock[])
@@ -213,23 +213,35 @@ function normalizeManualBlocks(raw: unknown): DraftBlock[] {
 }
 
 function mergeDraftPayload(
-  existing: WriterDraftPayload,
+  existing: WriterDraftPayload & Record<string, unknown>,
   incoming: {
     seo_title?: string;
     meta_title?: string;
     meta_description?: string;
     excerpt?: string;
     blocks?: unknown;
+    featured_image?: unknown;
+    primary_keyword?: string;
+    semantic_keywords?: unknown;
   }
-): WriterDraftPayload {
+): WriterDraftPayload & Record<string, unknown> {
   const blocks = incoming.blocks != null ? normalizeManualBlocks(incoming.blocks) : existing.blocks;
   return {
+    ...existing,
     seo_title: incoming.seo_title?.trim() || existing.seo_title || '',
     meta_title: incoming.meta_title?.trim() || existing.meta_title || existing.seo_title || '',
     meta_description:
       incoming.meta_description?.trim() || existing.meta_description || existing.excerpt || '',
     excerpt: incoming.excerpt?.trim() || existing.excerpt || '',
     blocks,
+    featured_image:
+      incoming.featured_image !== undefined ? incoming.featured_image : existing.featured_image,
+    primary_keyword:
+      incoming.primary_keyword !== undefined ? incoming.primary_keyword : existing.primary_keyword,
+    semantic_keywords:
+      incoming.semantic_keywords !== undefined
+        ? incoming.semantic_keywords
+        : existing.semantic_keywords,
   };
 }
 

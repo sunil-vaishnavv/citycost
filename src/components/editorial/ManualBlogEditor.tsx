@@ -267,12 +267,21 @@ export default function ManualBlogEditor({
       }
       const targetId = id;
       if (!targetId) throw new Error('Save the draft first');
-      await api.put<{ ok: true; word_count: number }>(
-        `/api/editorial/articles/${targetId}/manual`,
-        payload
-      );
-      showSuccess(`Draft saved · ${wordCount} words`);
-      onSaved?.(targetId, 'Draft saved');
+      const result = await api.put<{
+        ok: true;
+        word_count: number;
+        blocks?: ArticleBlock[];
+        draft_json?: Record<string, unknown>;
+      }>(`/api/editorial/articles/${targetId}/manual`, payload);
+      if (result.blocks?.length) {
+        const hydrated = blocksToEditorHtml(result.blocks);
+        setEditorHtml(hydrated);
+        setWordCount(htmlToPlainWordCount(hydrated));
+      }
+      if (payload.slug) initialSlugRef.current = payload.slug;
+      const savedLabel = articleStatus === 'published' ? 'Changes saved' : 'Draft saved';
+      showSuccess(`${savedLabel} · ${result.word_count ?? wordCount} words`);
+      onSaved?.(targetId, savedLabel);
       return targetId;
     } catch (err) {
       const msg = formatActionError(err, 'Unable to save draft');
@@ -444,6 +453,8 @@ export default function ManualBlogEditor({
 
   const previewBlocks = useMemo(() => editorHtmlToBlocks(editorHtml), [editorHtml]);
 
+  const isPublished = articleStatus === 'published';
+
   return (
     <div className="space-y-4">
       <div ref={errorBannerRef} className="space-y-3">
@@ -470,7 +481,7 @@ export default function ManualBlogEditor({
             disabled={busy != null && busy !== 'save'}
             onClick={() => void saveDraft()}
           >
-            Save Draft
+            {isPublished ? 'Save changes' : 'Save Draft'}
           </Button>
           <Button
             size="sm"
@@ -481,16 +492,18 @@ export default function ManualBlogEditor({
           >
             Preview
           </Button>
-          <Button
-            size="sm"
-            variant="accent"
-            icon={<Globe className="h-3.5 w-3.5" />}
-            loading={busy === 'publish'}
-            disabled={busy != null && busy !== 'publish'}
-            onClick={() => void publish()}
-          >
-            Publish
-          </Button>
+          {!isPublished && (
+            <Button
+              size="sm"
+              variant="accent"
+              icon={<Globe className="h-3.5 w-3.5" />}
+              loading={busy === 'publish'}
+              disabled={busy != null && busy !== 'publish'}
+              onClick={() => void publish()}
+            >
+              Publish
+            </Button>
+          )}
           {onCancel && (
             <Button size="sm" variant="ghost" disabled={busy != null} onClick={onCancel}>
               Cancel

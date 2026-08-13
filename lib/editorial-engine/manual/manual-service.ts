@@ -10,8 +10,8 @@ import {
   updateArticleIdentity,
   updateArticleStatus,
   updatePublishedArticleContent,
-  type EditorialArticleRow,
 } from '../db/articles-repo.js';
+import { insertGenerationLog } from '../db/generation-logs-repo.js';
 import { invalidateBlogPublicCache } from '../blog/blog-cache.js';
 import { createManualTopic, getTopicById, setTopicStatus } from '../db/topics-repo.js';
 import { generateArticleSeo } from '../seo/generate-seo.js';
@@ -53,6 +53,103 @@ function normalizeSlug(raw: string, fallbackTitle: string): string {
     throw new Error('Slug must be lowercase letters, numbers, and hyphens only');
   }
   return slug;
+}
+
+type ManualDraftPayload = WriterDraftPayload & {
+  featured_image?: FeaturedImageMeta | null;
+  primary_keyword?: string;
+  semantic_keywords?: string[];
+};
+
+function readExistingManualDraft(article: NonNullable<Awaited<ReturnType<typeof getArticleById>>>): ManualDraftPayload {
+  const existingRaw =
+    article.draft_json && typeof article.draft_json === 'object'
+      ? (article.draft_json as Record<string, unknown>)
+      : {};
+
+  return {
+    seo_title: article.seo_title || '',
+    meta_title: article.meta_title || '',
+    meta_description: article.meta_description || '',
+    excerpt: article.excerpt || '',
+    blocks: Array.isArray(article.blocks_json)
+      ? (article.blocks_json as DraftBlock[])
+      : [],
+    featured_image:
+      existingRaw.featured_image && typeof existingRaw.featured_image === 'object'
+        ? (existingRaw.featured_image as FeaturedImageMeta)
+        : null,
+    primary_keyword:
+      typeof existingRaw.primary_keyword === 'string' ? existingRaw.primary_keyword : undefined,
+    semantic_keywords: Array.isArray(existingRaw.semantic_keywords)
+      ? existingRaw.semantic_keywords.map(String)
+      : undefined,
+  };
+}
+
+async function persistManualArticleContent(input: {
+  article: NonNullable<Awaited<ReturnType<typeof getArticleById>>>;
+  articleId: number;
+  slug: string;
+  draft: ManualDraftPayload;
+  word_count: number;
+  reading_time: number;
+}): Promise<void> {
+  const { article, articleId, slug, draft, word_count, reading_time } = input;
+
+  if (article.status === 'published') {
+    const saved = await updatePublishedArticleContent({
+      id: articleId,
+      slug: slug !== article.slug ? slug : undefined,
+      draft,
+      word_count,
+      reading_time_minutes: reading_time,
+    });
+    if (!saved) {
+      throw new Error('Update failed — article may have been unpublished');
+    }
+
+    await insertGenerationLog({
+      article_id: articleId,
+      topic_id: article.topic_id,
+      stage: 'content_update',
+      success: true,
+      meta_json: {
+        slug,
+        word_count,
+        reading_time_minutes: reading_time,
+        block_count: draft.blocks.length,
+        manual: true,
+      },
+    });
+    invalidateBlogPublicCache();
+    return;
+  }
+
+  if (
+    slug !== article.slug ||
+    draft.seo_title !== article.seo_title ||
+    draft.meta_title !== article.meta_title ||
+    draft.meta_description !== (article.meta_description || '') ||
+    draft.excerpt !== (article.excerpt || '')
+  ) {
+    await updateArticleIdentity({
+      id: articleId,
+      slug,
+      seo_title: draft.seo_title,
+      meta_title: draft.meta_title,
+      meta_description: draft.meta_description,
+      excerpt: draft.excerpt,
+      draft,
+    });
+  } else {
+    await updateArticleDraft({
+      id: articleId,
+      draft,
+      word_count,
+      reading_time_minutes: reading_time,
+    });
+  }
 }
 
 function buildDraft(input: {
@@ -201,43 +298,14 @@ export async function updateManualArticleService(
     primary_keyword?: string;
     semantic_keywords?: string[];
   }
-): Promise<{ ok: true; word_count: number }> {
+): Promise<{ ok: true; word_count: number; blocks: DraftBlock[]; draft_json: ManualDraftPayload }> {
   const article = await getArticleById(articleId);
   if (!article) throw new Error('Article not found');
   if (!isManualArticle(article)) {
     throw new Error('Only manual articles can be updated through this endpoint');
   }
-  if (article.status === 'published') {
-    throw new Error('Use update-content for published articles');
-  }
 
-  const existingRaw =
-    article.draft_json && typeof article.draft_json === 'object'
-      ? (article.draft_json as Record<string, unknown>)
-      : {};
-
-  const existingDraft: WriterDraftPayload & {
-    featured_image?: FeaturedImageMeta | null;
-    primary_keyword?: string;
-    semantic_keywords?: string[];
-  } = {
-    seo_title: article.seo_title || '',
-    meta_title: article.meta_title || '',
-    meta_description: article.meta_description || '',
-    excerpt: article.excerpt || '',
-    blocks: Array.isArray(article.blocks_json)
-      ? (article.blocks_json as DraftBlock[])
-      : [],
-    featured_image:
-      existingRaw.featured_image && typeof existingRaw.featured_image === 'object'
-        ? (existingRaw.featured_image as FeaturedImageMeta)
-        : null,
-    primary_keyword:
-      typeof existingRaw.primary_keyword === 'string' ? existingRaw.primary_keyword : undefined,
-    semantic_keywords: Array.isArray(existingRaw.semantic_keywords)
-      ? existingRaw.semantic_keywords.map(String)
-      : undefined,
-  };
+  const existingDraft = readExistingManualDraft(article);
 
   const draft = buildDraft({
     seo_title: input.seo_title ?? existingDraft.seo_title,
@@ -255,7 +323,7 @@ export async function updateManualArticleService(
   const validation = validateManualDraft(draft, {
     minWords: 50,
     maxWords: settings.article_length_max,
-    mode: 'draft',
+    mode: article.status === 'published' ? 'publish' : 'draft',
   });
   if (!validation.ok) {
     throw new Error(validation.errors.join('; '));
@@ -273,32 +341,16 @@ export async function updateManualArticleService(
   const word_count = validation.word_count;
   const reading_time = readingTimeMinutes(word_count);
 
-  if (
-    slug !== article.slug ||
-    draft.seo_title !== article.seo_title ||
-    draft.meta_title !== article.meta_title ||
-    draft.meta_description !== (article.meta_description || '') ||
-    draft.excerpt !== (article.excerpt || '')
-  ) {
-    await updateArticleIdentity({
-      id: articleId,
-      slug,
-      seo_title: draft.seo_title,
-      meta_title: draft.meta_title,
-      meta_description: draft.meta_description,
-      excerpt: draft.excerpt,
-      draft,
-    });
-  } else {
-    await updateArticleDraft({
-      id: articleId,
-      draft,
-      word_count,
-      reading_time_minutes: reading_time,
-    });
-  }
+  await persistManualArticleContent({
+    article,
+    articleId,
+    slug,
+    draft,
+    word_count,
+    reading_time,
+  });
 
-  return { ok: true, word_count };
+  return { ok: true, word_count, blocks: draft.blocks, draft_json: draft };
 }
 
 /** Generate SEO package and move manual article to review — no AI writing. */
@@ -409,42 +461,6 @@ export async function publishManualArticleService(
   return publishArticle(articleId);
 }
 
-type ManualDraftWithExtras = WriterDraftPayload & {
-  featured_image?: FeaturedImageMeta | null;
-  primary_keyword?: string;
-  semantic_keywords?: string[];
-};
-
-async function persistManualDraftAfterFeaturedImageChange(
-  article: EditorialArticleRow,
-  draft: ManualDraftWithExtras
-): Promise<void> {
-  const word_count = article.word_count;
-  const reading_time_minutes =
-    article.reading_time_minutes || readingTimeMinutes(article.word_count);
-
-  if (article.status === 'published') {
-    const updated = await updatePublishedArticleContent({
-      id: article.id,
-      draft,
-      word_count,
-      reading_time_minutes,
-    });
-    if (!updated) {
-      throw new Error('Failed to update published article featured image');
-    }
-    invalidateBlogPublicCache();
-    return;
-  }
-
-  await updateArticleDraft({
-    id: article.id,
-    draft,
-    word_count,
-    reading_time_minutes,
-  });
-}
-
 function featuredImageForResponse(
   featured_image: FeaturedImageMeta,
   version: number | string = Date.now()
@@ -496,24 +512,20 @@ export async function uploadManualFeaturedImage(input: {
     throw new Error('No image data received');
   }
 
-  const blocks = Array.isArray(article.blocks_json)
-    ? (article.blocks_json as DraftBlock[])
-    : [];
+  const manualDraft = readExistingManualDraft(article);
   const draft = buildDraft({
-    seo_title: article.seo_title || '',
-    meta_title: article.meta_title || '',
-    meta_description: article.meta_description || '',
-    excerpt: article.excerpt || '',
-    blocks,
+    ...manualDraft,
     featured_image,
-    primary_keyword:
-      typeof existingDraft.primary_keyword === 'string' ? existingDraft.primary_keyword : undefined,
-    semantic_keywords: Array.isArray(existingDraft.semantic_keywords)
-      ? existingDraft.semantic_keywords.map(String)
-      : undefined,
   });
 
-  await persistManualDraftAfterFeaturedImageChange(article, draft);
+  await persistManualArticleContent({
+    article,
+    articleId: input.articleId,
+    slug: article.slug,
+    draft,
+    word_count: article.word_count,
+    reading_time: article.reading_time_minutes || readingTimeMinutes(article.word_count),
+  });
 
   const cacheVersion = Date.now();
   return { featured_image: featuredImageForResponse(featured_image, cacheVersion) };
@@ -535,24 +547,20 @@ export async function removeManualFeaturedImage(articleId: number): Promise<void
       : null;
   if (prev?.url) await deleteFeaturedImageFile(prev.url);
 
-  const blocks = Array.isArray(article.blocks_json)
-    ? (article.blocks_json as DraftBlock[])
-    : [];
+  const manualDraft = readExistingManualDraft(article);
   const draft = buildDraft({
-    seo_title: article.seo_title || '',
-    meta_title: article.meta_title || '',
-    meta_description: article.meta_description || '',
-    excerpt: article.excerpt || '',
-    blocks,
+    ...manualDraft,
     featured_image: null,
-    primary_keyword:
-      typeof existingDraft.primary_keyword === 'string' ? existingDraft.primary_keyword : undefined,
-    semantic_keywords: Array.isArray(existingDraft.semantic_keywords)
-      ? existingDraft.semantic_keywords.map(String)
-      : undefined,
   });
 
-  await persistManualDraftAfterFeaturedImageChange(article, draft);
+  await persistManualArticleContent({
+    article,
+    articleId,
+    slug: article.slug,
+    draft,
+    word_count: article.word_count,
+    reading_time: article.reading_time_minutes || readingTimeMinutes(article.word_count),
+  });
 }
 
 export async function createManualArticleFromTopic(topicId: number): Promise<{

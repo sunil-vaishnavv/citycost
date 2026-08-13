@@ -978,8 +978,8 @@ export default function ArticleDetailPanel({
                 blocks: preview.blocks,
                 draft_json: raw?.draft_json,
               }}
-              onSaved={() => {
-                setMessage('Draft saved');
+              onSaved={(_id, msg) => {
+                setMessage(msg);
                 void load();
                 onChanged?.();
               }}

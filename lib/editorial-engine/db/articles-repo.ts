@@ -531,25 +531,28 @@ export async function setArticleUnpublished(id: number): Promise<void> {
 /** In-place content update for published articles — keeps status published, no review. */
 export async function updatePublishedArticleContent(input: {
   id: number;
-  draft: WriterDraftPayload;
+  slug?: string;
+  draft: WriterDraftPayload & Record<string, unknown>;
   word_count: number;
   reading_time_minutes: number;
 }): Promise<boolean> {
   if (!pool) throw new Error('Database unavailable');
   const [result] = await pool.execute<ResultSetHeader>(
     `UPDATE editorial_articles
-     SET seo_title = $1,
-         meta_title = $2,
-         meta_description = $3,
-         excerpt = $4,
-         blocks_json = $5::jsonb,
-         draft_json = $6::jsonb,
-         word_count = $7,
-         reading_time_minutes = $8,
+     SET slug = COALESCE($1, slug),
+         seo_title = $2,
+         meta_title = $3,
+         meta_description = $4,
+         excerpt = $5,
+         blocks_json = $6::jsonb,
+         draft_json = $7::jsonb,
+         word_count = $8,
+         reading_time_minutes = $9,
          last_public_update_at = (NOW() AT TIME ZONE 'UTC'),
          updated_at = (NOW() AT TIME ZONE 'UTC')
-     WHERE id = $9 AND status = 'published'`,
+     WHERE id = $10 AND status = 'published'`,
     [
+      input.slug ?? null,
       input.draft.seo_title,
       input.draft.meta_title,
       input.draft.meta_description,
