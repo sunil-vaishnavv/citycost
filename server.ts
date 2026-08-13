@@ -143,8 +143,25 @@ app.use(cors({
   credentials: allowedOrigins.length > 0 && !allowedOrigins.includes('*'),
 }));
 
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+/** Default API JSON cap — keeps most routes tight. */
+const JSON_BODY_LIMIT_DEFAULT = '1mb';
+/**
+ * Manual blog featured images are uploaded as base64 inside JSON (~33% overhead).
+ * A 5MB file becomes ~6.7MB on the wire, so this route needs a higher cap.
+ */
+const JSON_BODY_LIMIT_FEATURED_IMAGE = '10mb';
+const FEATURED_IMAGE_UPLOAD_PATH = /^\/api\/editorial\/articles\/\d+\/featured-image\/?$/i;
+
+const jsonBodyDefault = express.json({ limit: JSON_BODY_LIMIT_DEFAULT });
+const jsonBodyFeaturedImage = express.json({ limit: JSON_BODY_LIMIT_FEATURED_IMAGE });
+
+app.use((req, res, next) => {
+  if (req.method === 'POST' && FEATURED_IMAGE_UPLOAD_PATH.test(req.path)) {
+    return jsonBodyFeaturedImage(req, res, next);
+  }
+  return jsonBodyDefault(req, res, next);
+});
+app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT_DEFAULT }));
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -860,6 +877,14 @@ for (const key of Object.keys(SITEMAP_BUILDERS)) {
     }
   });
 }
+
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const e = err as { type?: string; status?: number };
+  if (e?.type === 'entity.too.large' || e?.status === 413) {
+    return res.status(413).json({ error: 'Request body too large' });
+  }
+  return next(err);
+});
 
 async function start() {
   await testConnection();
