@@ -7,6 +7,7 @@ import {
   deleteEditorialImageFile,
   saveOptimizedEditorialImage,
 } from '../media/image-upload.js';
+import { stripFeaturedImageCacheBust } from './html-blocks.js';
 
 export interface FeaturedImagePayload {
   url: string;
@@ -41,5 +42,7 @@ export async function saveFeaturedImageFromBase64(input: {
 }
 
 export async function deleteFeaturedImageFile(publicPath: string | undefined): Promise<void> {
-  return deleteEditorialImageFile(publicPath);
+  return deleteEditorialImageFile(
+    publicPath ? stripFeaturedImageCacheBust(publicPath) : publicPath
+  );
 }

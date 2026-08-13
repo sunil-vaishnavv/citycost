@@ -393,13 +393,35 @@ export function extractFeaturedImage(draft: unknown): FeaturedImageMeta | null {
   if (!draft || typeof draft !== 'object') return null;
   const fi = (draft as ManualDraftExtras).featured_image;
   if (!fi || typeof fi !== 'object') return null;
-  const url = typeof fi.url === 'string' ? fi.url.trim() : '';
+  const url = typeof fi.url === 'string' ? stripFeaturedImageCacheBust(fi.url.trim()) : '';
   if (!url) return null;
   return {
     url,
     alt: typeof fi.alt === 'string' ? fi.alt : undefined,
     path: typeof fi.path === 'string' ? fi.path : undefined,
   };
+}
+
+/** Strip any existing ?v= query param before persisting to the database. */
+export function stripFeaturedImageCacheBust(url: string): string {
+  if (!url) return url;
+  const q = url.indexOf('?');
+  return q === -1 ? url : url.slice(0, q);
+}
+
+/** Append a cache-busting version query for browser/CDN freshness after updates. */
+export function bustFeaturedImageUrl(url: string, version?: number | string | Date | null): string {
+  const base = stripFeaturedImageCacheBust(url);
+  if (!base) return base;
+  let v: string;
+  if (version instanceof Date) {
+    v = String(version.getTime());
+  } else if (version != null && String(version).trim()) {
+    v = String(version).trim();
+  } else {
+    v = String(Date.now());
+  }
+  return `${base}?v=${encodeURIComponent(v)}`;
 }
 
 export function mergeDraftExtras(

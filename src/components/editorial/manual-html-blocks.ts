@@ -3,6 +3,8 @@ export {
   blocksToEditorHtml,
   editorHtmlToBlocks,
   extractFeaturedImage,
+  bustFeaturedImageUrl,
+  stripFeaturedImageCacheBust,
   containsHtml,
   stripHtml,
   sanitizeRichHtml,

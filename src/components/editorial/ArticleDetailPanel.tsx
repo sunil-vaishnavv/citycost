@@ -58,7 +58,7 @@ import AdvancedPanel from './wizard/AdvancedPanel';
 import WizardProgress from './wizard/WizardProgress';
 import PublishedContentEditor from './PublishedContentEditor';
 import ManualBlogEditor, { isManualArticle } from './ManualBlogEditor';
-import { extractFeaturedImage } from './manual-html-blocks';
+import { extractFeaturedImage, bustFeaturedImageUrl } from './manual-html-blocks';
 import {
   FieldRow,
   PreviewHeading,
@@ -869,9 +869,11 @@ export default function ArticleDetailPanel({
                 {(() => {
                   const fi = extractFeaturedImage(raw?.draft_json);
                   if (!fi?.url) return null;
+                  const imageVersion =
+                    article.last_public_update_at || article.published_at || article.updated_at;
                   return (
                     <img
-                      src={fi.url}
+                      src={bustFeaturedImageUrl(fi.url, imageVersion)}
                       alt={fi.alt || seo?.seo_title || article.seo_title || 'Featured'}
                       className="mt-5 aspect-[16/9] w-full rounded-xl border border-slate-200 object-cover dark:border-white/10"
                     />

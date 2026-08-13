@@ -14,6 +14,7 @@ import {
   blocksToEditorHtml,
   editorHtmlToBlocks,
   extractFeaturedImage,
+  bustFeaturedImageUrl,
 } from './manual-html-blocks';
 import RichTextEditor, { htmlToPlainWordCount } from './RichTextEditor';
 import ManualBlogPreviewModal from './ManualBlogPreviewModal';
@@ -130,7 +131,7 @@ export default function ManualBlogEditor({
   );
   const [featuredImage, setFeaturedImage] = useState<FeaturedImageState | null>(() => {
     const fi = extractFeaturedImage(draftExtras);
-    return fi ? { url: fi.url, alt: fi.alt } : null;
+    return fi ? { url: bustFeaturedImageUrl(fi.url), alt: fi.alt } : null;
   });
   const [wordCount, setWordCount] = useState(() =>
     initial?.blocks?.length
@@ -208,7 +209,7 @@ export default function ManualBlogEditor({
       content_type: contentType,
       topic_id: topicId ?? undefined,
       blocks,
-      featured_image: featuredImage,
+      ...(articleStatus !== 'published' ? { featured_image: featuredImage } : {}),
       primary_keyword: primaryKeyword.trim() || undefined,
     };
   }, [
@@ -222,6 +223,7 @@ export default function ManualBlogEditor({
     topicId,
     featuredImage,
     primaryKeyword,
+    articleStatus,
   ]);
 
   const buildPublishPayload = useCallback(() => {
@@ -382,8 +384,12 @@ export default function ManualBlogEditor({
     setError('');
     setSlugError('');
     try {
-      let id = effectiveArticleId ?? null;
+      let id = effectiveArticleId ?? articleId ?? null;
       if (!id) {
+        if (articleStatus === 'published') {
+          showError('Unable to replace featured image — reload the article and try again.');
+          return;
+        }
         id = await saveDraft();
         if (!id) return;
       }
@@ -394,8 +400,15 @@ export default function ManualBlogEditor({
         `/api/editorial/articles/${id}/featured-image`,
         formData
       );
-      setFeaturedImage(result.featured_image);
-      showSuccess('Featured image uploaded and optimized');
+      setFeaturedImage({
+        url: bustFeaturedImageUrl(result.featured_image.url),
+        alt: result.featured_image.alt,
+      });
+      showSuccess(
+        articleStatus === 'published'
+          ? 'Featured image replaced — live on the public blog'
+          : 'Featured image uploaded and optimized'
+      );
     } catch (err) {
       showError(formatActionError(err, 'Unable to upload featured image'));
     } finally {
@@ -413,7 +426,11 @@ export default function ManualBlogEditor({
     try {
       await api.delete(`/api/editorial/articles/${id}/featured-image`);
       setFeaturedImage(null);
-      showSuccess('Featured image removed');
+      showSuccess(
+        articleStatus === 'published'
+          ? 'Featured image removed from the live article'
+          : 'Featured image removed'
+      );
     } catch (err) {
       showError(formatActionError(err, 'Unable to remove featured image'));
     } finally {

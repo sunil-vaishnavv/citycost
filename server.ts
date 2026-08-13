@@ -243,10 +243,12 @@ app.get('/api/blog/:slug', async (req, res) => {
         excerpt: a.excerpt,
         reading_time_minutes: a.reading_time_minutes,
       }));
-    const { extractFeaturedImage } = await import(
+    const { extractFeaturedImage, bustFeaturedImageUrl } = await import(
       './lib/editorial-engine/manual/html-blocks.js'
     );
     const featured_image = extractFeaturedImage(article.draft);
+    const imageVersion =
+      article.last_public_update_at || article.published_at || article.updated_at;
     return res.json({
       article: {
         slug: article.slug,
@@ -264,7 +266,10 @@ app.get('/api/blog/:slug', async (req, res) => {
         internal_links: article.internal_links,
         entity_map: article.entity_map,
         featured_image: featured_image
-          ? { url: featured_image.url, alt: featured_image.alt }
+          ? {
+              url: bustFeaturedImageUrl(featured_image.url, imageVersion),
+              alt: featured_image.alt,
+            }
           : null,
         // Never expose raw_ai_response / prompts
       },

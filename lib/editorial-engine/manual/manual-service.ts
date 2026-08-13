@@ -9,7 +9,10 @@ import {
   updateArticleDraft,
   updateArticleIdentity,
   updateArticleStatus,
+  updatePublishedArticleContent,
+  type EditorialArticleRow,
 } from '../db/articles-repo.js';
+import { invalidateBlogPublicCache } from '../blog/blog-cache.js';
 import { createManualTopic, getTopicById, setTopicStatus } from '../db/topics-repo.js';
 import { generateArticleSeo } from '../seo/generate-seo.js';
 import { isManualArticle } from '../utils/article-origin.js';
@@ -22,7 +25,7 @@ import {
 } from '../writer/draft-validate.js';
 import { getSettings } from '../db/settings-repo.js';
 import type { DraftBlock } from '../writer/draft-validate.js';
-import type { FeaturedImageMeta } from './html-blocks.js';
+import { bustFeaturedImageUrl, type FeaturedImageMeta } from './html-blocks.js';
 
 const MANUAL_CONTENT_TYPES = new Set([
   'guide',
@@ -406,6 +409,52 @@ export async function publishManualArticleService(
   return publishArticle(articleId);
 }
 
+type ManualDraftWithExtras = WriterDraftPayload & {
+  featured_image?: FeaturedImageMeta | null;
+  primary_keyword?: string;
+  semantic_keywords?: string[];
+};
+
+async function persistManualDraftAfterFeaturedImageChange(
+  article: EditorialArticleRow,
+  draft: ManualDraftWithExtras
+): Promise<void> {
+  const word_count = article.word_count;
+  const reading_time_minutes =
+    article.reading_time_minutes || readingTimeMinutes(article.word_count);
+
+  if (article.status === 'published') {
+    const updated = await updatePublishedArticleContent({
+      id: article.id,
+      draft,
+      word_count,
+      reading_time_minutes,
+    });
+    if (!updated) {
+      throw new Error('Failed to update published article featured image');
+    }
+    invalidateBlogPublicCache();
+    return;
+  }
+
+  await updateArticleDraft({
+    id: article.id,
+    draft,
+    word_count,
+    reading_time_minutes,
+  });
+}
+
+function featuredImageForResponse(
+  featured_image: FeaturedImageMeta,
+  version: number | string = Date.now()
+): FeaturedImageMeta {
+  return {
+    ...featured_image,
+    url: bustFeaturedImageUrl(featured_image.url, version),
+  };
+}
+
 export async function uploadManualFeaturedImage(input: {
   articleId: number;
   buffer?: Buffer;
@@ -464,14 +513,10 @@ export async function uploadManualFeaturedImage(input: {
       : undefined,
   });
 
-  await updateArticleDraft({
-    id: input.articleId,
-    draft,
-    word_count: article.word_count,
-    reading_time_minutes: article.reading_time_minutes || readingTimeMinutes(article.word_count),
-  });
+  await persistManualDraftAfterFeaturedImageChange(article, draft);
 
-  return { featured_image };
+  const cacheVersion = Date.now();
+  return { featured_image: featuredImageForResponse(featured_image, cacheVersion) };
 }
 
 export async function removeManualFeaturedImage(articleId: number): Promise<void> {
@@ -507,12 +552,7 @@ export async function removeManualFeaturedImage(articleId: number): Promise<void
       : undefined,
   });
 
-  await updateArticleDraft({
-    id: articleId,
-    draft,
-    word_count: article.word_count,
-    reading_time_minutes: article.reading_time_minutes || readingTimeMinutes(article.word_count),
-  });
+  await persistManualDraftAfterFeaturedImageChange(article, draft);
 }
 
 export async function createManualArticleFromTopic(topicId: number): Promise<{
