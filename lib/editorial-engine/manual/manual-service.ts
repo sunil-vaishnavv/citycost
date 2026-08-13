@@ -408,15 +408,18 @@ export async function publishManualArticleService(
 
 export async function uploadManualFeaturedImage(input: {
   articleId: number;
-  dataBase64: string;
-  mime: string;
+  buffer?: Buffer;
+  dataBase64?: string;
+  mime?: string;
   alt?: string;
 }): Promise<{ featured_image: FeaturedImageMeta }> {
   const article = await getArticleById(input.articleId);
   if (!article) throw new Error('Article not found');
   if (!isManualArticle(article)) throw new Error('Featured image upload is for manual articles only');
 
-  const { saveFeaturedImage, deleteFeaturedImageFile } = await import('./featured-image.js');
+  const { saveFeaturedImage, saveFeaturedImageFromBase64, deleteFeaturedImageFile } = await import(
+    './featured-image.js'
+  );
   const { extractFeaturedImage } = await import('./html-blocks.js');
 
   const existingDraft =
@@ -426,12 +429,23 @@ export async function uploadManualFeaturedImage(input: {
   const prev = extractFeaturedImage(existingDraft);
   if (prev?.url) await deleteFeaturedImageFile(prev.url);
 
-  const featured_image = await saveFeaturedImage({
-    articleId: input.articleId,
-    dataBase64: input.dataBase64,
-    mime: input.mime,
-    alt: input.alt,
-  });
+  let featured_image: FeaturedImageMeta;
+  if (input.buffer && input.buffer.length > 0) {
+    featured_image = await saveFeaturedImage({
+      articleId: input.articleId,
+      buffer: input.buffer,
+      alt: input.alt,
+    });
+  } else if (input.dataBase64) {
+    featured_image = await saveFeaturedImageFromBase64({
+      articleId: input.articleId,
+      dataBase64: input.dataBase64,
+      mime: input.mime || 'image/jpeg',
+      alt: input.alt,
+    });
+  } else {
+    throw new Error('No image data received');
+  }
 
   const blocks = Array.isArray(article.blocks_json)
     ? (article.blocks_json as DraftBlock[])

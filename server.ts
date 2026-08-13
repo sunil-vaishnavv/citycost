@@ -146,22 +146,23 @@ app.use(cors({
 /** Default API JSON cap — keeps most routes tight. */
 const JSON_BODY_LIMIT_DEFAULT = '1mb';
 /**
- * Manual blog featured images are uploaded as base64 inside JSON (~33% overhead).
- * A 5MB file becomes ~6.7MB on the wire, so this route needs a higher cap.
+ * Legacy base64 JSON uploads (featured-image fallback). Multipart is preferred.
+ * 40 MB accommodates ~30 MB originals with base64 overhead.
  */
-const JSON_BODY_LIMIT_FEATURED_IMAGE = '10mb';
-const FEATURED_IMAGE_UPLOAD_PATH = /^\/api\/editorial\/articles\/\d+\/featured-image\/?$/i;
+const JSON_BODY_LIMIT_IMAGE_UPLOAD = '40mb';
+const IMAGE_UPLOAD_JSON_PATHS =
+  /^\/api\/editorial\/(articles\/\d+\/featured-image|media\/upload)\/?$/i;
 
 const jsonBodyDefault = express.json({ limit: JSON_BODY_LIMIT_DEFAULT });
-const jsonBodyFeaturedImage = express.json({ limit: JSON_BODY_LIMIT_FEATURED_IMAGE });
+const jsonBodyImageUpload = express.json({ limit: JSON_BODY_LIMIT_IMAGE_UPLOAD });
 
 app.use((req, res, next) => {
-  if (req.method === 'POST' && FEATURED_IMAGE_UPLOAD_PATH.test(req.path)) {
-    return jsonBodyFeaturedImage(req, res, next);
+  if (req.method === 'POST' && IMAGE_UPLOAD_JSON_PATHS.test(req.path)) {
+    return jsonBodyImageUpload(req, res, next);
   }
   return jsonBodyDefault(req, res, next);
 });
-app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT_DEFAULT }));
+app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT_IMAGE_UPLOAD }));
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -879,9 +880,13 @@ for (const key of Object.keys(SITEMAP_BUILDERS)) {
 }
 
 app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const e = err as { type?: string; status?: number };
+  const e = err as { type?: string; status?: number; limit?: number };
   if (e?.type === 'entity.too.large' || e?.status === 413) {
-    return res.status(413).json({ error: 'Request body too large' });
+    console.error('[body-parser] request entity too large', { limit: e.limit });
+    return res.status(413).json({
+      error: 'The upload is too large for the server to accept. Try a smaller file or contact support.',
+      code: 'file_too_large',
+    });
   }
   return next(err);
 });

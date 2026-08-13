@@ -375,11 +375,7 @@ export default function ManualBlogEditor({
 
   const uploadFeaturedImage = async (file: File) => {
     if (!file.type.startsWith('image/')) {
-      showError('Unable to upload image. Please choose a JPEG, PNG, or WebP file.');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      showError('Unable to upload image. Maximum file size is 5MB.');
+      showError('Unsupported format. Please choose a JPEG, PNG, WebP, or GIF image.');
       return;
     }
     setBusy('upload');
@@ -391,18 +387,15 @@ export default function ManualBlogEditor({
         id = await saveDraft();
         if (!id) return;
       }
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(new Error('Failed to read file'));
-        reader.readAsDataURL(file);
-      });
-      const result = await api.post<{ featured_image: FeaturedImageState }>(
+      const formData = new FormData();
+      formData.append('image', file);
+      if (seoTitle.trim()) formData.append('alt', seoTitle.slice(0, 120));
+      const result = await api.upload<{ featured_image: FeaturedImageState }>(
         `/api/editorial/articles/${id}/featured-image`,
-        { data_base64: dataUrl, mime: file.type, alt: seoTitle.slice(0, 120) }
+        formData
       );
       setFeaturedImage(result.featured_image);
-      showSuccess('Featured image uploaded');
+      showSuccess('Featured image uploaded and optimized');
     } catch (err) {
       showError(formatActionError(err, 'Unable to upload featured image'));
     } finally {
@@ -647,7 +640,7 @@ export default function ManualBlogEditor({
               >
                 <ImageIcon className="h-8 w-8 text-slate-300 dark:text-slate-600" />
                 <span className="text-sm font-medium text-slate-600 dark:text-slate-300">Upload featured image</span>
-                <span className="text-xs text-slate-400">JPEG, PNG, WebP · max 5MB</span>
+                <span className="text-xs text-slate-400">JPEG, PNG, WebP, GIF · auto-optimized on upload</span>
               </button>
             )}
             <input

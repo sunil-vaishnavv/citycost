@@ -1,5 +1,11 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
+import { imageErrorResponse } from '../image-optimize.js';
+import {
+  editorialImageUpload,
+  multerErrorResponse,
+  saveOptimizedEditorialImage,
+} from './media/image-upload.js';
 import {
   clearSessionCookie,
   getSessionTokenFromRequest,
@@ -1214,24 +1220,95 @@ export function createEditorialRouter(): Router {
     }
   });
 
-  router.post('/articles/:id/featured-image', requireEditorialAuth, requireOrigin, async (req, res) => {
-    try {
-      const id = parseInt(req.params.id, 10);
-      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id' });
-      const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const { uploadManualFeaturedImage } = await import('./manual/manual-service.js');
-      const result = await uploadManualFeaturedImage({
-        articleId: id,
-        dataBase64: String(body.data_base64 || body.dataBase64 || ''),
-        mime: String(body.mime || body.content_type || 'image/jpeg'),
-        alt: typeof body.alt === 'string' ? body.alt : undefined,
+  router.post(
+    '/articles/:id/featured-image',
+    requireEditorialAuth,
+    requireOrigin,
+    (req, res, next) => {
+      editorialImageUpload.single('image')(req, res, (err) => {
+        if (err) {
+          const mapped = multerErrorResponse(err) || imageErrorResponse(err);
+          console.error('[featured-image] multer error:', err);
+          return res.status(mapped.status).json(mapped.body);
+        }
+        next();
       });
-      return res.json({ ok: true, ...result });
-    } catch (err) {
-      console.error('editorial featured-image upload error:', err);
-      return res.status(400).json({ error: (err as Error).message || 'Upload failed' });
+    },
+    async (req, res) => {
+      try {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid article id', code: 'upload_failed' });
+
+        const contentLength = parseInt(String(req.headers['content-length'] || '0'), 10) || 0;
+        console.log(`[featured-image:${id}] request received`, {
+          contentType: req.headers['content-type'],
+          contentLength,
+          hasFile: Boolean(req.file),
+        });
+
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const alt =
+          typeof body.alt === 'string'
+            ? body.alt
+            : typeof req.body?.alt === 'string'
+              ? req.body.alt
+              : undefined;
+
+        const { uploadManualFeaturedImage } = await import('./manual/manual-service.js');
+        const result = await uploadManualFeaturedImage({
+          articleId: id,
+          buffer: req.file?.buffer,
+          dataBase64: req.file ? undefined : String(body.data_base64 || body.dataBase64 || ''),
+          mime: req.file?.mimetype || String(body.mime || body.content_type || 'image/jpeg'),
+          alt,
+        });
+        return res.json({ ok: true, ...result });
+      } catch (err) {
+        console.error('[featured-image] upload error:', err);
+        const mapped = imageErrorResponse(err);
+        return res.status(mapped.status).json(mapped.body);
+      }
     }
-  });
+  );
+
+  /** Universal inline / rich-text image upload — same optimization pipeline as featured images. */
+  router.post(
+    '/media/upload',
+    requireEditorialAuth,
+    requireOrigin,
+    (req, res, next) => {
+      editorialImageUpload.single('image')(req, res, (err) => {
+        if (err) {
+          const mapped = multerErrorResponse(err) || imageErrorResponse(err);
+          console.error('[media-upload] multer error:', err);
+          return res.status(mapped.status).json(mapped.body);
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      try {
+        if (!req.file?.buffer?.length) {
+          return res.status(400).json({ error: 'No image file received', code: 'upload_failed' });
+        }
+        const body = req.body && typeof req.body === 'object' ? req.body : {};
+        const prefix = typeof body.prefix === 'string' && body.prefix.trim()
+          ? body.prefix.trim().replace(/[^a-z0-9_-]/gi, '-').slice(0, 40)
+          : 'inline';
+        const saved = await saveOptimizedEditorialImage({
+          buffer: req.file.buffer,
+          prefix,
+          alt: typeof body.alt === 'string' ? body.alt : undefined,
+          logPrefix: '[media-upload]',
+        });
+        return res.json({ ok: true, url: saved.url, alt: saved.alt, width: saved.width, height: saved.height });
+      } catch (err) {
+        console.error('[media-upload] error:', err);
+        const mapped = imageErrorResponse(err);
+        return res.status(mapped.status).json(mapped.body);
+      }
+    }
+  );
 
   router.delete('/articles/:id/featured-image', requireEditorialAuth, requireOrigin, async (req, res) => {
     try {

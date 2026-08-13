@@ -22,10 +22,12 @@ export function setAuthToken(token: string | null): void {
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -45,11 +47,12 @@ function friendlyHttpError(status: number): string {
   return `Something went wrong (HTTP ${status}). Please try again.`;
 }
 
-function extractErrorMessage(data: unknown, status: number): string {
+function extractErrorMessage(data: unknown, status: number): { message: string; code?: string } {
   if (data && typeof data === 'object') {
     const o = data as Record<string, unknown>;
-    if (typeof o.error === 'string' && o.error.trim()) return o.error.trim();
-    if (typeof o.message === 'string' && o.message.trim()) return o.message.trim();
+    const code = typeof o.code === 'string' ? o.code : undefined;
+    if (typeof o.error === 'string' && o.error.trim()) return { message: o.error.trim(), code };
+    if (typeof o.message === 'string' && o.message.trim()) return { message: o.message.trim(), code };
     if (Array.isArray(o.errors)) {
       const parts = o.errors
         .map((e) => {
@@ -60,22 +63,24 @@ function extractErrorMessage(data: unknown, status: number): string {
           return '';
         })
         .filter(Boolean);
-      if (parts.length) return parts.join('; ');
+      if (parts.length) return { message: parts.join('; '), code };
     }
   }
-  return friendlyHttpError(status);
+  return { message: friendlyHttpError(status) };
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(init.headers as Record<string, string> | undefined),
   };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
   const res = await fetch(path, { ...init, headers, credentials: 'include' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new ApiError(extractErrorMessage(data, res.status), res.status);
+    const { message, code } = extractErrorMessage(data, res.status);
+    throw new ApiError(message, res.status, code);
   }
   return data as T;
 }
@@ -84,6 +89,8 @@ export const api = {
   get: <T>(path: string, init?: RequestInit) => request<T>(path, init),
   post: <T>(path: string, body?: unknown, init?: RequestInit) =>
     request<T>(path, { ...init, method: 'POST', body: JSON.stringify(body ?? {}) }),
+  upload: <T>(path: string, formData: FormData, init?: RequestInit) =>
+    request<T>(path, { ...init, method: 'POST', body: formData }),
   put: <T>(path: string, body?: unknown, init?: RequestInit) =>
     request<T>(path, { ...init, method: 'PUT', body: JSON.stringify(body ?? {}) }),
   patch: <T>(path: string, body?: unknown, init?: RequestInit) =>

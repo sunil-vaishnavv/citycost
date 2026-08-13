@@ -68,6 +68,13 @@ if ! sudo nginx -t >/dev/null 2>&1; then
   exit 1
 fi
 
+# Warn if nginx upload limit is still at default 1m (blocks image uploads before Node)
+nginx_body_limit=$(sudo nginx -T 2>/dev/null | grep -m1 'client_max_body_size' | awk '{print $2}' | tr -d ';' || true)
+if [[ "${nginx_body_limit:-1m}" == "1m" ]]; then
+  log "WARN: nginx client_max_body_size is 1m — image uploads may fail with HTTP 413"
+  log "WARN: Apply deploy/nginx-citycost-uploads.conf and reload nginx (client_max_body_size 50m)"
+fi
+
 log "Local health OK"
 health_body=$(curl -fsS "$HEALTH_LOCAL")
 echo "${health_body:0:200}"
