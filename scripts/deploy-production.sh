@@ -63,16 +63,35 @@ if [[ "$ready" -ne 1 ]]; then
   exit 1
 fi
 
-if ! sudo nginx -t >/dev/null 2>&1; then
-  log "ERROR: nginx -t failed"
+NGINX_UPLOADS_SRC="$APP_DIR/deploy/nginx-citycost-uploads.conf"
+NGINX_UPLOADS_DEST="/etc/nginx/conf.d/citycost-uploads.conf"
+
+if [[ -f "$NGINX_UPLOADS_SRC" ]]; then
+  log "Applying nginx upload limits: $NGINX_UPLOADS_SRC -> $NGINX_UPLOADS_DEST"
+  log "Command: sudo cp $NGINX_UPLOADS_SRC $NGINX_UPLOADS_DEST"
+  sudo cp "$NGINX_UPLOADS_SRC" "$NGINX_UPLOADS_DEST"
+  sudo chmod 644 "$NGINX_UPLOADS_DEST"
+else
+  log "WARN: $NGINX_UPLOADS_SRC missing — skipping nginx upload limit update"
+fi
+
+log "Command: sudo nginx -t"
+if ! sudo nginx -t; then
+  log "ERROR: nginx -t failed after applying upload limits"
   exit 1
 fi
 
-# Warn if nginx upload limit is still at default 1m (blocks image uploads before Node)
+log "Command: sudo systemctl reload nginx"
+if ! sudo systemctl reload nginx; then
+  log "ERROR: nginx reload failed"
+  exit 1
+fi
+
 nginx_body_limit=$(sudo nginx -T 2>/dev/null | grep -m1 'client_max_body_size' | awk '{print $2}' | tr -d ';' || true)
+log "nginx client_max_body_size: ${nginx_body_limit:-unknown}"
 if [[ "${nginx_body_limit:-1m}" == "1m" ]]; then
-  log "WARN: nginx client_max_body_size is 1m — image uploads may fail with HTTP 413"
-  log "WARN: Apply deploy/nginx-citycost-uploads.conf and reload nginx (client_max_body_size 50m)"
+  log "ERROR: nginx client_max_body_size is still 1m — image uploads will fail with HTTP 413"
+  exit 1
 fi
 
 log "Local health OK"
