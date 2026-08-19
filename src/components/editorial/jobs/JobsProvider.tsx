@@ -19,6 +19,19 @@ import {
   type EnqueueRevisionResult,
 } from './types';
 
+/** Tracks the current admin pathname using the custom History API router. */
+function usePathname(): string {
+  const [pathname, setPathname] = useState<string>(() =>
+    typeof window !== 'undefined' ? window.location.pathname : '/'
+  );
+  useEffect(() => {
+    const sync = () => setPathname(window.location.pathname);
+    window.addEventListener('popstate', sync);
+    return () => window.removeEventListener('popstate', sync);
+  }, []);
+  return pathname;
+}
+
 type Toast = {
   id: string;
   title: string;
@@ -203,6 +216,19 @@ export function JobsProvider({
   const [hydrated, setHydrated] = useState(false);
   const terminalHandlers = useMemo(() => new Set<(job: DraftJobView) => void>(), []);
   const seenTerminal = useMemo(() => new Set<number>(), []);
+  const location = usePathname();
+
+  // Route-change cleanup: the drawer only tracks an in-memory job id. If the
+  // route changes (e.g. Open Article navigates to /admin/articles/:id), make
+  // sure the drawer is fully unmounted so no overlay survives navigation.
+  useEffect(() => {
+    setDrawerJobId((prev) => {
+      if (prev != null) {
+        console.log(`[jobs] route change to ${location} — closing drawer (was job #${prev})`);
+      }
+      return null;
+    });
+  }, [location]);
 
   const subscribeJobTerminal = useCallback((handler: (job: DraftJobView) => void) => {
     terminalHandlers.add(handler);
@@ -428,6 +454,17 @@ export function JobsProvider({
 
   const activeCount = jobs.filter((j) => j.status === 'queued' || j.status === 'running').length;
 
+  // Close the drawer first, then navigate so the overlay is fully unmounted
+  // before the article page renders.
+  const handleOpenArticle = useCallback(
+    (articleId: number) => {
+      console.log(`[jobs] Open Article clicked — closing drawer before navigating to #${articleId}`);
+      setDrawerJobId(null);
+      onOpenArticle?.(articleId);
+    },
+    [onOpenArticle]
+  );
+
   const value: JobsContextValue = {
     jobs,
     activeCount,
@@ -439,7 +476,7 @@ export function JobsProvider({
     cancelJob,
     retryJob,
     refreshJobs,
-    onOpenArticle,
+    onOpenArticle: handleOpenArticle,
     subscribeJobTerminal,
   };
 
@@ -450,7 +487,7 @@ export function JobsProvider({
         jobId={drawerJobId}
         open={drawerJobId != null}
         onClose={() => setDrawerJobId(null)}
-        onOpenArticle={onOpenArticle}
+        onOpenArticle={handleOpenArticle}
         onCancel={(id) => void cancelJob(id)}
         onRetry={(id) => void retryJob(id)}
         onJobTerminal={emitJobTerminal}
@@ -459,7 +496,7 @@ export function JobsProvider({
       <ToastHost
         toasts={toasts}
         onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))}
-        onOpen={onOpenArticle}
+        onOpen={handleOpenArticle}
       />
     </JobsContext.Provider>
   );
