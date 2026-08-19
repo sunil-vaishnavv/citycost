@@ -337,8 +337,8 @@ export default function ArticlesPanel() {
       />
 
       <GlassPanel padding="p-4">
-        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-          <div className="relative">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-3">
+          <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
               value={q}
@@ -346,10 +346,22 @@ export default function ArticlesPanel() {
                 setOffset(0);
                 setQ(e.target.value);
               }}
-              placeholder="Search by title, slug, or excerpt…"
+              placeholder="Search by title, slug, or excerpt..."
               className="pl-9"
             />
           </div>
+          <Select
+            value={source}
+            onChange={(e) => {
+              setOffset(0);
+              setSource(e.target.value);
+            }}
+            className="sm:w-40"
+          >
+            <option value="">All sources</option>
+            <option value="manual">Manual</option>
+            <option value="automatic">Automatic</option>
+          </Select>
           <Select
             value={status}
             onChange={(e) => {
@@ -364,18 +376,6 @@ export default function ArticlesPanel() {
                 {s.replace(/_/g, ' ')}
               </option>
             ))}
-          </Select>
-          <Select
-            value={source}
-            onChange={(e) => {
-              setOffset(0);
-              setSource(e.target.value);
-            }}
-            className="sm:w-40"
-          >
-            <option value="">All sources</option>
-            <option value="manual">Manual</option>
-            <option value="automatic">Automatic</option>
           </Select>
         </div>
       </GlassPanel>
