@@ -350,6 +350,14 @@ export async function generateArticleDraft(
     debug.final_word_count = word_count;
     debug.generation_time_ms = generation_time_ms;
 
+    const finalFaqBlock = (draft.blocks || []).find((b) => b.type === 'faq');
+    const finalFaqCount = finalFaqBlock && Array.isArray(finalFaqBlock.content)
+      ? finalFaqBlock.content.length
+      : 0;
+    console.log(
+      `[generate] Pre-save draft ready. blocks=${draft.blocks?.length} faq_items=${finalFaqCount} words=${word_count}`
+    );
+
     const articleId = await insertDraftArticle({
       slug,
       content_type: topic.content_type,

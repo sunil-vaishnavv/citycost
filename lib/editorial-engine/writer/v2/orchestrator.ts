@@ -59,6 +59,7 @@ import {
 } from './quality-gates.js';
 import { memoryDigestForPrompt, createContentMemory, rememberSection } from './content-memory.js';
 import { assertGuideSpecificWriter, getGuideSectionWriter } from './sections/registry.js';
+import { buildDeterministicFaqItems } from '../../faq/faq-deterministic.js';
 import { runSimilarityEngine, similarityNeedsRewrite } from './similarity/engine.js';
 import type { EditorialPlan, WriterV2Result } from './types.js';
 import type { DraftJobStage, DraftProgressEvent } from '../../jobs/draft-job-types.js';
@@ -265,10 +266,47 @@ async function writeSection(input: {
   return { blocks, writerId: writer.id, digest };
 }
 
+/**
+ * Merge AI-generated FAQ items with deterministic fillers so the block always
+ * meets the validator's minimum of 6 items. Keeps the AI's items first and only
+ * appends curated fallbacks for the missing count.
+ */
+function fillFaqToFloor(
+  aiFaq: DraftBlock,
+  research: ResearchPack,
+  aiCount: number
+): DraftBlock {
+  const MIN_FAQ = 6;
+  const aiItems = Array.isArray(aiFaq.content) ? aiFaq.content : [];
+  const questions = (research.required_faq?.length
+    ? research.required_faq
+    : research.searcher_questions || []
+  )
+    .map((q) => String(q || '').trim())
+    .filter(Boolean)
+    .slice(0, 10);
+  const det = buildDeterministicFaqItems(research, questions);
+  const existing = new Set(
+    aiItems.map((it) =>
+      String((it as { q?: string }).q || '')
+        .trim()
+        .toLowerCase()
+    )
+  );
+  const extras = det.filter((d) => !existing.has(d.q.trim().toLowerCase()));
+  const merged = [...aiItems, ...extras.map((d) => ({ id: d.id, q: d.q, a: d.a }))];
+  const result = merged.slice(0, 10);
+  console.log(
+    `[writer-v2:faq] Padded ${aiCount} AI items to ${result.length} via deterministic fallback (min ${MIN_FAQ}).`
+  );
+  return { ...aiFaq, content: result };
+}
+
 async function writeFaq(input: {
   plan: EditorialPlan;
   draft: WriterDraftPayload;
   factsDigest: string;
+  research: ResearchPack;
   complete: (system: string, user: string) => Promise<string>;
 }): Promise<DraftBlock> {
   const writer = getGuideSectionWriter(input.plan.guide_id, 'faq');
@@ -288,10 +326,20 @@ async function writeFaq(input: {
     const text = await input.complete(system, user);
     const blocks = parseBlocksFromAi(text);
     const faq = blocks.find((b) => b.type === 'faq');
-    if (faq) return faq;
+    if (faq) {
+      const aiCount = Array.isArray(faq.content) ? faq.content.length : 0;
+      console.log(
+        `[writer-v2:faq] AI generated ${aiCount} FAQ items (need >=6).`
+      );
+      // Enforce the same >=6 floor the rest of the pipeline guarantees so the
+      // draft-validate gate (faq_min_6) never rejects a well-formed AI block.
+      if (aiCount >= 6) return faq;
+      return fillFaqToFloor(faq, input.research, aiCount);
+    }
   } catch {
     /* fall through */
   }
+  console.log('[writer-v2:faq] No AI FAQ block; using deterministic fallback.');
   return {
     id: 'faq',
     type: 'faq',
@@ -673,7 +721,7 @@ export async function runWriterV2(input: {
       stage: 'generating_faq',
       message: 'Generating FAQ…',
     });
-    const faq = await writeFaq({ plan, draft, factsDigest, complete });
+    const faq = await writeFaq({ plan, draft, factsDigest, research: input.research, complete });
     draft.blocks.push(faq);
     sectionWriterIds.push(`${plan.guide_id}.faq`);
     passes.push({
