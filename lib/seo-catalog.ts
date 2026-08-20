@@ -6,7 +6,7 @@
 
 import { Country } from 'country-state-city';
 import { getCurrencyForCountry } from './col-engine/currency.js';
-import { resolveCityCostOfLivingSync } from './col-engine/index.js';
+import { resolveCityCost } from './city-cost-resolve.js';
 import { SEO_INDEX_CONFIG } from './seo-config.js';
 import {
   listEligibleCities,
@@ -81,8 +81,30 @@ let comparisonsPublicCache: Array<{
 }> | null = null;
 let comparisonsFingerprint = '';
 
+/**
+ * Same-entity duplicate page slugs: alias slug -> canonical slug.
+ *
+ * Both records describe one city (identical coordinates, population and cost
+ * data) under an alternate or former name, so they must collapse to a single
+ * indexable URL instead of competing as two near-identical pages.
+ *
+ * Only exact same-entity aliases belong here. Distinct neighbouring cities that
+ * merely share rounded coordinates — Delhi vs New Delhi, or adjacent Maltese
+ * towns — are separate places and keep their own pages.
+ */
+export const CITY_SLUG_ALIASES: Record<string, string> = {
+  'new-york-city-new-york-united-states': 'new-york-new-york-united-states',
+  'bangalore-karnataka-india': 'bengaluru-karnataka-india',
+};
+
+/** Canonical slug for a duplicate alias, or null when the slug is already canonical. */
+export function canonicalCitySlug(slug: string): string | null {
+  const target = CITY_SLUG_ALIASES[slug.trim().toLowerCase()];
+  return target || null;
+}
+
 export function listIndexableCities(): EligibleCity[] {
-  const cities = listEligibleCities();
+  const cities = listEligibleCities().filter((c) => !CITY_SLUG_ALIASES[c.pageSlug]);
   const fp = `${cities.length}:${cities[0]?.pageSlug || ''}:${cities[cities.length - 1]?.pageSlug || ''}:${SEO_INDEX_CONFIG.maxIndexableComparisons}`;
   if (fp !== comparisonsFingerprint) {
     comparisonsCache = null;
@@ -102,7 +124,7 @@ export function listIndexableCountries(): Array<{ code: string; slug: string; na
 }
 
 export function findCityBySlug(slug: string): EligibleCity | null {
-  return findEligibleByPageSlug(slug);
+  return findEligibleByPageSlug(canonicalCitySlug(slug) || slug);
 }
 
 export function findCountryCities(countryCode: string): EligibleCity[] {
@@ -454,7 +476,7 @@ export function buildCompareSeoLinks(cityAName: string, cityBName: string): Comp
   const enrichOpts = (() => {
     if (!recA && !recB) return undefined;
     const idx = (rec: EligibleCity | null) =>
-      rec ? resolveCityCostOfLivingSync(cityQueryLabel(rec)).indices : null;
+      rec ? resolveCityCost(rec).indices : null;
     const idxA = idx(recA);
     const idxB = idx(recB);
     return {
@@ -479,7 +501,7 @@ export function buildCompareSeoLinks(cityAName: string, cityBName: string): Comp
 }
 
 function metricsFor(city: EligibleCity): { rent: number; salary: number; cpi: number; groceries: number } {
-  const resolved = resolveCityCostOfLivingSync(cityQueryLabel(city));
+  const resolved = resolveCityCost(city);
   const byName = (n: string) => resolved.prices.find((p) => p.item_name === n)?.average_price ?? 0;
   return {
     rent: byName('Apartment (1 bedroom) in City Centre'),
@@ -703,7 +725,7 @@ export function buildCityPageData(slug: string): CityPageData | null {
   const rec = findCityBySlug(slug);
   if (!rec) return null;
 
-  const resolved = resolveCityCostOfLivingSync(cityQueryLabel(rec));
+  const resolved = resolveCityCost(rec);
   const fx = getCurrencyForCountry(rec.countryCode);
   const prices = resolved.prices;
   const byName = (n: string) => prices.find((p) => p.item_name === n)?.average_price ?? 0;
@@ -892,7 +914,7 @@ export function buildComparePageData(slug: string): {
   };
 
   if (cityARec) {
-    const r = resolveCityCostOfLivingSync(cityQueryLabel(cityARec));
+    const r = resolveCityCost(cityARec);
     cpiA = r.indices.cpi_index;
     rentA = r.indices.rent_index;
     ppA = r.indices.local_purchasing_power_index;
@@ -911,7 +933,7 @@ export function buildComparePageData(slug: string): {
     salaryA = byName(r.prices, 'Average Monthly Net Salary (After Tax)');
   }
   if (cityBRec) {
-    const r = resolveCityCostOfLivingSync(cityQueryLabel(cityBRec));
+    const r = resolveCityCost(cityBRec);
     cpiB = r.indices.cpi_index;
     rentB = r.indices.rent_index;
     ppB = r.indices.local_purchasing_power_index;

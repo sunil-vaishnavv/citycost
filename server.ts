@@ -27,7 +27,7 @@ import {
   warmGeoCityIndex,
   getGeoCityCount,
 } from './lib/geo-cities.js';
-import { resolveCityCostOfLiving } from './lib/col-engine/index.js';
+import { resolveCityCostByQuery } from './lib/city-cost-resolve.js';
 import {
   buildCountryPageData,
   buildCityPageData,
@@ -337,7 +337,7 @@ app.get('/api/city_prices', async (req, res) => {
   }
 
   try {
-    const estimated = await resolveCityCostOfLiving(query, {
+    const estimated = await resolveCityCostByQuery(query, {
       numbeoKey: process.env.NUMBEO_API_KEY,
     });
     return res.json({

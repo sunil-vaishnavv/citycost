@@ -4,7 +4,7 @@
  */
 
 import { getCurrencyForCountry } from '../col-engine/currency.js';
-import { resolveCityCostOfLivingSync } from '../col-engine/index.js';
+import { resolveCityCost } from '../city-cost-resolve.js';
 import type { EligibleCity } from '../seo-eligibility.js';
 import type { CityKnowledge, CountryKnowledge, CompareKnowledge } from './types.js';
 
@@ -22,7 +22,7 @@ export function buildCityKnowledge(
     related_comparisons: Array<{ slug: string; label: string }>;
   }
 ): CityKnowledge {
-  const resolved = resolveCityCostOfLivingSync(rec.label || [rec.city, rec.state, rec.country].filter(Boolean).join(', '));
+  const resolved = resolveCityCost(rec);
   const fx = getCurrencyForCountry(rec.countryCode);
   const prices = resolved.prices;
 

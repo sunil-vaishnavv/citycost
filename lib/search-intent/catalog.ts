@@ -3,7 +3,7 @@
  * Reads SEO indexable cities; does not modify SEO Eligibility Engine.
  */
 
-import { resolveCityCostOfLivingSync } from '../col-engine/index.js';
+import { resolveCityCost } from '../city-cost-resolve.js';
 import { getCurrencyForCountry } from '../col-engine/currency.js';
 import {
   listIndexableCities,
@@ -66,7 +66,7 @@ function metricsFor(rec: EligibleCity): CityMetricsForIntent {
   const hit = metricsCache.get(rec.pageSlug);
   if (hit) return hit;
 
-  const resolved = resolveCityCostOfLivingSync(cityQueryLabel(rec));
+  const resolved = resolveCityCost(rec);
   const byName = (n: string) => resolved.prices.find((p) => p.item_name === n)?.average_price ?? 0;
   const rent = byName('Apartment (1 bedroom) in City Centre');
   const salary = byName('Average Monthly Net Salary (After Tax)');

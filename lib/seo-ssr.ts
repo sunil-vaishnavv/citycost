@@ -12,6 +12,7 @@ import {
   listIndexableCities,
   findCityBySlug,
   cityQueryLabel,
+  canonicalCitySlug,
 } from './seo-catalog.js';
 import {
   SITE_NAME,
@@ -69,6 +70,7 @@ import {
   expandCountryFaqs,
 } from './public-content/index.js';
 import { buildIntentPageFromPath } from './search-intent/index.js';
+import { parseCityLandingPath } from './search-intent/intent.js';
 
 function esc(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -577,6 +579,11 @@ export function resolveSeoHtml(html: string, pathname: string): SeoHtmlResult {
 
   const countryMatch = path.match(/^\/country\/([a-z0-9-]+)$/i);
   if (countryMatch) {
+    // One canonical casing: mixed-case URLs 301 rather than serving a second
+    // copy that points its canonical elsewhere.
+    if (countryMatch[1] !== countryMatch[1].toLowerCase()) {
+      return { status: 301, location: `${SITE_URL}/country/${countryMatch[1].toLowerCase()}` };
+    }
     const data = buildCountryPageData(countryMatch[1]);
     if (!data) return { status: 404, html: buildNotFoundHtml(html) };
     const title = buildCountryTitle(data.name);
@@ -629,7 +636,16 @@ export function resolveSeoHtml(html: string, pathname: string): SeoHtmlResult {
 
   const cityMatch = path.match(/^\/city\/([a-z0-9-]+)$/i);
   if (cityMatch) {
-    const data = buildCityPageData(cityMatch[1]);
+    const requestedCity = cityMatch[1].toLowerCase();
+    if (cityMatch[1] !== requestedCity) {
+      return { status: 301, location: `${SITE_URL}/city/${requestedCity}` };
+    }
+    // Duplicate record for the same city under an alternate/former name.
+    const canonicalCity = canonicalCitySlug(requestedCity);
+    if (canonicalCity) {
+      return { status: 301, location: `${SITE_URL}/city/${canonicalCity}` };
+    }
+    const data = buildCityPageData(requestedCity);
     if (!data) return { status: 404, html: buildNotFoundHtml(html) };
     const title = buildCityTitle(data.city, data.country);
     const desc = data.seo_description || buildCityDescription(data.city, data.country);
@@ -761,6 +777,19 @@ export function resolveSeoHtml(html: string, pathname: string): SeoHtmlResult {
       buildServerJsonLdScript('webpage', buildAuthorityWebPageSchema(doc)) +
       buildServerJsonLdScript('breadcrumb', buildAuthorityBreadcrumb(doc));
     return { status: 200, html: injectBeforeHeadClose(stripDefaultHeadMeta(html), meta + ld) };
+  }
+
+  // City intent landings share the city page slug, so the same alias rules apply.
+  const landing = parseCityLandingPath(path);
+  if (landing) {
+    const landingSlug = landing.slug.toLowerCase();
+    const landingCanonical = canonicalCitySlug(landingSlug);
+    if (landing.slug !== landingSlug || landingCanonical) {
+      return {
+        status: 301,
+        location: `${SITE_URL}/${landing.kind}/${landingCanonical || landingSlug}`,
+      };
+    }
   }
 
   const intentPage = buildIntentPageFromPath(path);

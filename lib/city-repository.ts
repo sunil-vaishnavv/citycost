@@ -5,7 +5,7 @@
  */
 
 import * as dbModule from './db.js';
-import { resolveCityCostOfLiving } from './col-engine/index.js';
+import { resolveCityCostByQuery } from './city-cost-resolve.js';
 import { logEvent } from './logger.js';
 import type { CityData, PriceItem } from '../src/types.js';
 import type { GeneratedCityData } from './groq.js';
@@ -80,6 +80,14 @@ async function getCityPrices(cityId: number): Promise<PriceItem[]> {
   }
 }
 
+/** Does a DB row describe the same country the engine resolved? */
+function sameCountryRow(row: { country_code?: string | null; country?: string | null }, engine: ColEngineResult): boolean {
+  const rowCode = String(row.country_code || '').trim().toUpperCase();
+  if (rowCode && engine.countryCode) return rowCode === engine.countryCode.toUpperCase();
+  const rowCountry = String(row.country || '').trim().toLowerCase();
+  return Boolean(rowCountry) && rowCountry === String(engine.country || '').trim().toLowerCase();
+}
+
 function isVerifiedSource(source: string | null | undefined): boolean {
   if (!source) return false;
   const s = source.toLowerCase();
@@ -135,6 +143,19 @@ async function saveCityData(
            currency = EXCLUDED.currency,
            symbol = EXCLUDED.symbol,
            exchange_rate = EXCLUDED.exchange_rate,
+           -- Refresh the descriptive columns too. These used to be INSERT-only, so
+           -- rows written by the old engine kept country_code = 'US' for Andorra
+           -- and the Dominican Republic even after the currency had been corrected
+           -- on a later write. The verified-row guard above already prevents an
+           -- estimate from overwriting real surveyed data.
+           state = EXCLUDED.state,
+           country_code = EXCLUDED.country_code,
+           data_source = EXCLUDED.data_source,
+           confidence = EXCLUDED.confidence,
+           is_verified = EXCLUDED.is_verified,
+           tier = EXCLUDED.tier,
+           population = EXCLUDED.population,
+           estimation_note = EXCLUDED.estimation_note,
            updated_at = (NOW() AT TIME ZONE 'UTC')
          RETURNING id`,
         [
@@ -255,14 +276,27 @@ function toCityData(engine: ColEngineResult, cityId: number): CityData & { city_
 }
 
 /**
- * Cache-first:
- *  1. Verified DB row (never discarded for estimate)
+ * Resolution order:
+ *  1. Verified DB row (real surveyed data; never discarded for an estimate)
  *  2. COL engine (surveyed → Numbeo → nearby → regional)
  *  3. Persist (without overwriting verified)
+ *
+ * Modelled (non-verified) rows are deliberately NOT read back. Such a row is a
+ * snapshot of a previous engine run, not data: serving it made
+ * /api/city_prices report whatever the engine produced the first time a city
+ * was ever requested, while /city/<slug> rendered the current engine output, so
+ * the two surfaces disagreed for the same city. The live cache still held Zug
+ * carrying Bangkok's exact indices, and Warsaw / Sant Julià de Lòria /
+ * San Pedro de Macorís stamped United States + USD by the old country-code
+ * fallback. Modelled resolution is deterministic and fully in-process, so there
+ * is nothing to cache — recomputing beats a round trip to Postgres, and the
+ * write below re-persists the row so stale estimates self-heal on first request.
  */
 async function getOrGenerateCityData(query: string): Promise<CityData & { city_id: number }> {
   const startTime = Date.now();
-  const engine = await resolveCityCostOfLiving(query, {
+  // Same resolver the city pages use, so /api/city_prices and /city/<slug>
+  // never report different numbers for the same city.
+  const engine = await resolveCityCostByQuery(query, {
     numbeoKey: process.env.NUMBEO_API_KEY,
   });
 
@@ -272,16 +306,25 @@ async function getOrGenerateCityData(query: string): Promise<CityData & { city_i
   if (getPool()) {
     try {
       let existing = await getCityByName(cityPart, countryPart);
-      if (!existing && countryPart) existing = await getCityByName(cityPart);
+      if (!existing && countryPart) {
+        // Name-only fallback: 'San José' matches Costa Rica AND California,
+        // 'Warsaw' matches Poland AND Indiana. Accept the row only when it is
+        // the same country, otherwise this hands one country's prices to
+        // another — the same class of bug as the old US country-code fallback.
+        const loose = await getCityByName(cityPart);
+        if (loose && sameCountryRow(loose, engine)) existing = loose;
+      }
 
-      if (existing) {
-        const verified = existing.is_verified || isVerifiedSource(existing.data_source);
+      const verified =
+        existing != null && (existing.is_verified || isVerifiedSource(existing.data_source));
+
+      if (existing && verified) {
         const [indices, prices] = await Promise.all([
           getCityIndices(existing.id),
           getCityPrices(existing.id),
         ]);
 
-        if (verified && prices?.length && indices) {
+        if (prices?.length && indices) {
           await logEvent({
             city_query: query,
             cache_hit: true,
@@ -308,45 +351,6 @@ async function getOrGenerateCityData(query: string): Promise<CityData & { city_i
             confidence_label: '★★★★★ Cached verified data',
             estimation_note: existing.estimation_note || 'Served from verified database cache.',
           };
-        }
-
-        // Non-verified cache: accept if currency matches and CPI sane
-        if (
-          prices?.length &&
-          indices &&
-          String(existing.currency).toUpperCase() === engine.currency.toUpperCase() &&
-          !(engine.countryCode === 'IN' && Number(indices.cpi_index) > 45)
-        ) {
-          // Prefer fresher engine surveyed over stale estimate cache
-          if (engine.is_verified) {
-            // fall through to save surveyed
-          } else {
-            await logEvent({
-              city_query: query,
-              cache_hit: true,
-              cache_type: 'city_data',
-              response_time_ms: Date.now() - startTime,
-            }).catch(() => {});
-            return {
-              city_id: existing.id,
-              name: engine.name,
-              currency: existing.currency,
-              symbol: existing.symbol,
-              indices: {
-                cpi_index: Number(indices.cpi_index),
-                rent_index: Number(indices.rent_index),
-                groceries_index: Number(indices.groceries_index),
-                restaurant_price_index: Number(indices.restaurant_price_index),
-                local_purchasing_power_index: Number(indices.local_purchasing_power_index),
-              },
-              exchange_rate: Number(existing.exchange_rate),
-              prices,
-              data_source: existing.data_source || 'Cached',
-              confidence: Number(existing.confidence ?? 0.7),
-              confidence_label: engine.confidence_label,
-              estimation_note: existing.estimation_note || engine.estimation_note,
-            };
-          }
         }
       }
     } catch (err) {
