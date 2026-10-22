@@ -9,7 +9,7 @@ export type {
   WriterResearchContract,
 } from './schema.js';
 export { ResearchPackValidationError } from './schema.js';
-export { assembleResearchPack, buildResearchPack, previewResearchPack } from './build.js';
+export { assembleResearchPack, buildResearchPack, buildGroundedResearchPackAsync, previewResearchPack } from './build.js';
 export { validateResearchPack } from './validate.js';
 export { extractResearchEntities } from './entities.js';
 export { extractResearchKeywords } from './keywords.js';

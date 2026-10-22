@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { RichText } from '../../RichText';
 import { ProseHtml } from '../../ProseHtml';
 import { containsHtml, listItemsFromContent, blockHeadingLevel, blockHeadingText } from '../manual-html-blocks';
+import type { DraftBlock } from '../../../../lib/editorial-engine/writer/draft-validate.js';
 
 export function normHeading(h: string): string {
   return h.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -59,7 +60,7 @@ export function headingLabel(block: {
 }): string {
   if (typeof block.heading === 'string' && block.heading.trim()) return block.heading.trim();
   if (block.type === 'heading') {
-    const fromObj = blockHeadingText(block as { type: string; heading?: string; content?: unknown });
+    const fromObj = blockHeadingText(block as unknown as DraftBlock);
     if (fromObj) return fromObj;
     if (typeof block.content === 'string') return block.content.trim();
   }
@@ -72,7 +73,7 @@ export function previewHeadingLevel(block: {
   content?: unknown;
 }): number {
   if (block.type === 'heading') {
-    return blockHeadingLevel(block as { type: string; heading?: string; content?: unknown });
+    return blockHeadingLevel(block as unknown as DraftBlock);
   }
   return 2;
 }

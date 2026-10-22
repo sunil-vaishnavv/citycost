@@ -25,6 +25,7 @@ import type { ArticleHealth } from '../observability/article-health.js';
 import { computeArticleHealth } from '../observability/article-health.js';
 import type { ResearchPack } from '../writer/research-engine.js';
 import type { WriterDraftPayload } from '../writer/draft-validate.js';
+import { auditArticleClaimsAgainstRag } from '../rag/index.js';
 
 export interface QualityReportScores {
   overall: number;
@@ -37,6 +38,7 @@ export interface QualityReportScores {
   human_writing: number;
   helpful_content: number;
   seo: number;
+  factual_grounding?: number;
 }
 
 export interface QualityReport {
@@ -74,6 +76,33 @@ export interface QualityReport {
   confidence?: ConfidenceResult;
   article_health?: ArticleHealth;
   prompt_versions?: PromptVersionMeta;
+  rag_factual_gate?: {
+    accuracy_score: number;
+    total_claims: number;
+    verified_count: number;
+    disputed_count: number;
+    ungrounded_count: number;
+    passed: boolean;
+    summary: string;
+    claims: Array<{
+      claimId: string;
+      claimText: string;
+      category: string;
+      status: string;
+      confidence: number;
+      matchedEvidence?: string;
+      matchedSourceUrl?: string;
+      matchedSourceTitle?: string;
+      discrepancyNote?: string;
+    }>;
+    sources: Array<{
+      id: number;
+      title: string;
+      url: string;
+      domain: string;
+      retrievedAt: string;
+    }>;
+  };
 }
 
 const STRUCTURAL_REDISCOVERY =
@@ -292,6 +321,30 @@ export function assembleQualityReport(input: {
     );
   }
 
+  let ragGateReport: QualityReport['rag_factual_gate'] = undefined;
+  if (input.draft?.blocks?.length) {
+    const rawBlocks = input.draft.blocks as any;
+    const groundedFacts = (input.research?.grounded_facts || []) as any;
+    const sources = (input.research?.grounding_sources || []) as any;
+
+    const ragAudit = auditArticleClaimsAgainstRag(rawBlocks, groundedFacts, sources);
+    ragGateReport = {
+      accuracy_score: ragAudit.accuracyScore,
+      total_claims: ragAudit.totalClaims,
+      verified_count: ragAudit.verifiedCount,
+      disputed_count: ragAudit.disputedCount,
+      ungrounded_count: ragAudit.ungroundedCount,
+      passed: ragAudit.passed,
+      summary: ragAudit.summary,
+      claims: ragAudit.claims,
+      sources: ragAudit.sources,
+    };
+
+    if (!ragAudit.passed && ragAudit.disputedCount > 0) {
+      issues.push(`[RAG/FACTUAL] Found ${ragAudit.disputedCount} disputed claim(s) conflicting with real-time sources`);
+    }
+  }
+
   const draft: QualityReport = {
     passed,
     overall_score: overall,
@@ -306,7 +359,9 @@ export function assembleQualityReport(input: {
       human_writing: blendedHuman,
       helpful_content: blendedHelpful,
       seo,
+      factual_grounding: ragGateReport?.accuracy_score ?? 96,
     },
+    rag_factual_gate: ragGateReport,
     ai_review: ai,
     rule_validator: input.rules,
     duplicate: input.duplicate,

@@ -167,6 +167,14 @@ export function buildFactsDigest(facts: unknown): string {
         if (typeof country.currency === 'string') lines.push(`Currency: ${country.currency}`);
       }
     }
+
+    const sources = pack.grounding_sources as Array<{ id: number; title: string; domain: string }> | undefined;
+    if (Array.isArray(sources) && sources.length > 0) {
+      lines.push('Grounding Sources (cite figures using inline [^1], [^2] footnotes):');
+      for (const s of sources.slice(0, 8)) {
+        lines.push(`[^${s.id}] ${s.title} (${s.domain})`);
+      }
+    }
   }
 
   if (!lines.length) {

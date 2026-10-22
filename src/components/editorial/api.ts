@@ -645,3 +645,99 @@ export interface EditorialSettings {
   confidence_action_low?: 'auto_publish' | 'ready' | 'review' | 'manual';
   [key: string]: unknown;
 }
+
+export interface GroundingSource {
+  id: number;
+  title: string;
+  url: string;
+  domain: string;
+  retrievedAt: string;
+  snippet?: string;
+}
+
+export interface GroundedFact {
+  category: string;
+  statement: string;
+  city?: string;
+  figure?: string;
+  sourceId: number;
+  citationRef: string;
+}
+
+export interface ClaimAuditResult {
+  claimId: string;
+  claimText: string;
+  category: string;
+  status: 'verified' | 'disputed' | 'ungrounded';
+  confidence: number;
+  matchedSourceId?: number;
+  matchedSourceUrl?: string;
+  matchedSourceTitle?: string;
+  matchedEvidence?: string;
+  discrepancyNote?: string;
+}
+
+export interface RagAuditReport {
+  accuracyScore: number;
+  totalClaims: number;
+  verifiedCount: number;
+  disputedCount: number;
+  ungroundedCount: number;
+  passed: boolean;
+  claims: ClaimAuditResult[];
+  sources: GroundingSource[];
+  summary: string;
+  auditedAt: string;
+}
+
+export interface RagRetrievalResult {
+  query: string;
+  targetCity: string;
+  comparisonCity?: string;
+  sources: GroundingSource[];
+  facts: GroundedFact[];
+  factLines: string[];
+  retrievalTimestamp: string;
+  model: string;
+}
+
+export interface RagStatusResponse {
+  ok: boolean;
+  engine: string;
+  model: string;
+  search_grounding: string;
+  google_search_enabled: boolean;
+  features: string[];
+  timestamp: string;
+}
+
+export async function getRagStatus(): Promise<RagStatusResponse> {
+  return request<RagStatusResponse>('/api/editorial/rag/status');
+}
+
+export async function retrieveRagData(params: {
+  targetCity: string;
+  comparisonCity?: string;
+  topicTitle?: string;
+  category?: string;
+}): Promise<{ ok: boolean; data: RagRetrievalResult }> {
+  return request<{ ok: boolean; data: RagRetrievalResult }>('/api/editorial/rag/retrieve', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+
+export async function auditRagClaims(params: {
+  articleId?: number;
+  text?: string;
+  blocks?: unknown[];
+  targetCity?: string;
+  groundedFacts?: GroundedFact[];
+  sources?: GroundingSource[];
+}): Promise<{ ok: boolean; report: RagAuditReport }> {
+  return request<{ ok: boolean; report: RagAuditReport }>('/api/editorial/rag/audit', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+}
+

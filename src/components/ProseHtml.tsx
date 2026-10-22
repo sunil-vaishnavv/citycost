@@ -78,7 +78,7 @@ function sanitizeNode(node: Node, key: number): ReactNode {
               : tag === 'li'
                 ? 'leading-relaxed'
                 : undefined;
-  const Tag = tag as keyof JSX.IntrinsicElements;
+  const Tag = (tag as any) || 'div';
   return (
     <Tag key={key} className={cls}>
       {children}

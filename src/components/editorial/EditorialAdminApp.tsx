@@ -4,6 +4,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   FileText,
+  Globe,
   LayoutDashboard,
   ListTree,
   Lock,
@@ -20,17 +21,19 @@ import { Button, Callout, Field, Input } from './ui';
 import DashboardPanel from './DashboardPanel';
 import ArticlesPanel from './ArticlesPanel';
 import TopicsPanel from './TopicsPanel';
+import RagPipelinePanel from './RagPipelinePanel';
 import AutomationPanel from './AutomationPanel';
 import SettingsPanel from './SettingsPanel';
 import { JobCenterDropdown, JobsProvider, useEditorialJobs } from './jobs/JobsProvider';
 import { adminPageFromPath, adminPathForPage, navigateArticles } from './admin-routes';
 
-export type AdminPage = 'dashboard' | 'articles' | 'topics' | 'automation' | 'settings';
+export type AdminPage = 'dashboard' | 'articles' | 'topics' | 'rag' | 'automation' | 'settings';
 
 const NAV_ITEMS: Array<{ key: AdminPage; label: string; icon: ReactNode; description: string }> = [
   { key: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-[18px] w-[18px]" />, description: 'Overview' },
   { key: 'articles', label: 'Articles', icon: <FileText className="h-[18px] w-[18px]" />, description: 'Drafting & publishing' },
   { key: 'topics', label: 'Topics', icon: <ListTree className="h-[18px] w-[18px]" />, description: 'Strategy pipeline' },
+  { key: 'rag', label: 'RAG Pipeline', icon: <Globe className="h-[18px] w-[18px]" />, description: 'Live web & fact audit' },
   { key: 'automation', label: 'Automation', icon: <CalendarClock className="h-[18px] w-[18px]" />, description: 'Daily pipeline' },
   { key: 'settings', label: 'Settings', icon: <Settings2 className="h-[18px] w-[18px]" />, description: 'Configuration' },
 ];
@@ -310,6 +313,7 @@ export default function EditorialAdminApp() {
             {page === 'dashboard' && <DashboardPanel onNavigate={navigatePage} />}
             {page === 'articles' && <ArticlesPanel />}
             {page === 'topics' && <TopicsPanel onNavigate={navigatePage} />}
+            {page === 'rag' && <RagPipelinePanel />}
             {page === 'automation' && <AutomationPanel />}
             {page === 'settings' && <SettingsPanel />}
           </div>

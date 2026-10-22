@@ -137,6 +137,23 @@ export interface ResearchPack {
   eeat_opportunities: string[];
   writer_contract: WriterResearchContract;
   validation: ResearchPackValidation;
+  grounding_sources?: Array<{
+    id: number;
+    title: string;
+    url: string;
+    domain: string;
+    retrievedAt: string;
+    snippet?: string;
+  }>;
+  grounded_facts?: Array<{
+    category: string;
+    statement: string;
+    city?: string;
+    figure?: string;
+    sourceId: number;
+    citationRef: string;
+  }>;
+  rag_accuracy_score?: number;
 }
 
 export class ResearchPackValidationError extends Error {

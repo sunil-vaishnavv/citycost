@@ -34,16 +34,18 @@ export function navigateArticles(route: ArticlesRoute, opts?: { replace?: boolea
   }
 }
 
-export function adminPageFromPath(pathname: string): 'dashboard' | 'articles' | 'topics' | 'automation' | 'settings' {
+export function adminPageFromPath(pathname: string): 'dashboard' | 'articles' | 'topics' | 'rag' | 'automation' | 'settings' {
   const path = (pathname.split('?')[0] || '/').replace(/\/+$/, '') || '/';
   if (path.startsWith('/admin/articles')) return 'articles';
   if (path.startsWith('/admin/topics')) return 'topics';
+  if (path.startsWith('/admin/rag')) return 'rag';
   if (path.startsWith('/admin/automation')) return 'automation';
   if (path.startsWith('/admin/settings')) return 'settings';
   return 'dashboard';
 }
 
-export function adminPathForPage(page: 'dashboard' | 'articles' | 'topics' | 'automation' | 'settings'): string {
+export function adminPathForPage(page: 'dashboard' | 'articles' | 'topics' | 'rag' | 'automation' | 'settings'): string {
   if (page === 'dashboard') return '/admin';
   return `/admin/${page}`;
 }
+

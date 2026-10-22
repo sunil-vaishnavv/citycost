@@ -8,6 +8,7 @@ export {
   ResearchPackValidationError,
   assembleResearchPack,
   buildResearchPack,
+  buildGroundedResearchPackAsync,
   previewResearchPack,
   validateResearchPack,
 } from '../research/index.js';

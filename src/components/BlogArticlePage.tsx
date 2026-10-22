@@ -13,6 +13,7 @@ import {
   blockHeadingLevel,
   blockHeadingText,
 } from './editorial/manual-html-blocks';
+import type { DraftBlock } from '../../lib/editorial-engine/writer/draft-validate.js';
 
 type Block = {
   id: string;
@@ -284,9 +285,9 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
       const isToc = /^table of contents|^contents$/i.test(heading);
       if (isToc) continue;
       if (b.type === 'heading') {
-        const label = blockHeadingText(b as Block & { content?: unknown }) || heading || blockPlainText(b.content).trim();
+        const label = blockHeadingText(b as unknown as DraftBlock) || heading || blockPlainText(b.content).trim();
         if (!label) continue;
-        const level = blockHeadingLevel(b as Block & { content?: unknown });
+        const level = blockHeadingLevel(b as unknown as DraftBlock);
         if (level >= 3) continue;
         idx += 1;
         map.set(b.id, slugifyHeading(label, idx));
@@ -571,11 +572,11 @@ export default function BlogArticlePage({ article, related, onNavigate }: Props)
 
               if (b.type === 'heading') {
                 const label =
-                  blockHeadingText(b as Block & { content?: unknown }) ||
+                  blockHeadingText(b as unknown as DraftBlock) ||
                   heading ||
                   blockPlainText(b.content).trim();
                 if (!label) return null;
-                const level = blockHeadingLevel(b as Block & { content?: unknown });
+                const level = blockHeadingLevel(b as unknown as DraftBlock);
                 if (level === 3 || level === 4) {
                   return (
                     <div key={b.id}>

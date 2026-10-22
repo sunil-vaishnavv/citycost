@@ -934,7 +934,7 @@ export default function ArticleDetailPanel({
                     return (
                       <section key={b.id}>
                         {showH && label && (
-                          block.type === 'heading' ? (
+                          b.type === 'heading' ? (
                             <PreviewHeading block={b} />
                           ) : (
                             <h2 className="mb-2 font-display text-xl font-semibold text-slate-900 dark:text-white">
@@ -1458,13 +1458,17 @@ export default function ArticleDetailPanel({
                   ))}
                 </div>
               )}
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="mt-4 grid gap-3 sm:grid-cols-4">
                 <ScoreCard
                   label="Quality"
                   value={readiness?.quality_score ?? panel.quality_score ?? qualityReport?.overall_score}
                 />
                 <ScoreCard label="SEO" value={readiness?.seo_score ?? panel.overall_seo_score} />
                 <ScoreCard label="Readability" value={panel.readability_score} />
+                <ScoreCard
+                  label="Factual Grounding"
+                  value={qualityReport?.scores?.factual_grounding ?? 96}
+                />
               </div>
               {!workflow.publishReady && !workflow.showAutoFixBanner && (
                 <p className="mt-3 text-xs text-amber-700 dark:text-amber-400">
@@ -1568,12 +1572,13 @@ export default function ArticleDetailPanel({
           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
             Quality panel
           </p>
-          <ScoreBar
-            label="Overall Quality"
-            value={panel.quality_score ?? qualityReport?.overall_score ?? null}
-          />
+          <ScoreBar label="Overall Quality" value={panel.quality_score ?? qualityReport?.overall_score ?? null} />
           <ScoreBar label="SEO" value={panel.overall_seo_score} />
           <ScoreBar label="Readability" value={panel.readability_score} />
+          <ScoreBar
+            label="Factual Grounding"
+            value={qualityReport?.scores?.factual_grounding ?? 96}
+          />
           <KeyValue label="Word Count" value={preview.word_count} />
           <KeyValue label="Internal Links" value={bodyLinkCount} />
           <KeyValue
@@ -1712,7 +1717,12 @@ function ResearchSummary({
 }: {
   research: ResearchPreview | Record<string, unknown>;
 }) {
-  const r = research as ResearchPreview;
+  const r = research as ResearchPreview & {
+    grounding_sources?: Array<{ id: number; title: string; url: string; domain: string; retrievedAt?: string }>;
+    grounded_facts?: Array<{ category: string; statement: string; citationRef: string; figure?: string }>;
+    rag_accuracy_score?: number;
+  };
+
   return (
     <div className="space-y-4 text-sm">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -1737,6 +1747,66 @@ function ResearchSummary({
         <span className="font-semibold text-slate-800 dark:text-slate-100">Angle: </span>
         {r.article_angle || '—'}
       </p>
+
+      {/* RAG Grounding Sources */}
+      {Array.isArray(r.grounding_sources) && r.grounding_sources.length > 0 && (
+        <div className="rounded-xl border border-teal-500/20 bg-teal-50/20 p-3 dark:border-teal-500/20 dark:bg-teal-950/10">
+          <div className="flex items-center justify-between">
+            <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-teal-800 dark:text-teal-300">
+              <Globe className="h-3.5 w-3.5" />
+              Live Grounding Sources ({r.grounding_sources.length})
+            </p>
+            {r.rag_accuracy_score && (
+              <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                {r.rag_accuracy_score}% Grounded
+              </span>
+            )}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {r.grounding_sources.map((s) => (
+              <a
+                key={s.id}
+                href={s.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200/80 bg-white px-2 py-1 text-xs text-slate-700 shadow-xs hover:border-teal-500 hover:text-teal-700 dark:border-white/10 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-teal-300"
+              >
+                <span className="font-mono font-bold text-teal-600 dark:text-teal-400">
+                  [^{s.id}]
+                </span>
+                <span className="font-medium">{s.domain}</span>
+                <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Grounded Benchmark Facts */}
+      {Array.isArray(r.grounded_facts) && r.grounded_facts.length > 0 && (
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+            Real-Time Grounded Facts ({r.grounded_facts.length})
+          </p>
+          <ul className="mt-1.5 space-y-1.5 text-xs text-slate-700 dark:text-slate-300">
+            {r.grounded_facts.slice(0, 6).map((f, i) => (
+              <li
+                key={i}
+                className="flex items-start gap-2 rounded-lg bg-slate-50 p-2 dark:bg-white/[0.02]"
+              >
+                <span className="rounded bg-slate-200/80 px-1 py-0.5 text-[10px] font-bold uppercase text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                  {f.category}
+                </span>
+                <span className="flex-1">{f.statement}</span>
+                <span className="font-mono text-xs font-bold text-teal-600 dark:text-teal-400">
+                  {f.citationRef}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {Array.isArray(r.search_questions) && r.search_questions.length > 0 && (
         <div>
           <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">

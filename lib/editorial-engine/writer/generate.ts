@@ -19,7 +19,7 @@ import type { DraftProgressEvent } from '../jobs/draft-job-types.js';
 import { getEditorialRuntime } from '../init.js';
 import { cleanEditorialSlug, cleanEditorialTitle } from '../utils/clean-title.js';
 import { buildStructuredContext } from './context-pack.js';
-import { buildResearchPack } from './research-engine.js';
+import { buildResearchPack, buildGroundedResearchPackAsync } from './research-engine.js';
 import {
   countDraftWords,
   readingTimeMinutes,
@@ -184,13 +184,20 @@ export async function generateArticleDraft(
         checkpoint: 'research',
       });
     } else {
-      research = buildResearchPack(topic, context);
+      await emit({
+        type: 'log',
+        message: 'Fetching real-time Google Search grounding facts and authoritative benchmarks…',
+        checkpoint: 'research',
+      });
+      research = await buildGroundedResearchPackAsync(topic, context);
     }
     await emit({
       type: 'checkpoint',
       checkpoint: 'research',
       stage: 'preparing_research',
-      message: 'Research loaded',
+      message: research.grounding_sources?.length
+        ? `Research grounded with ${research.grounding_sources.length} live sources`
+        : 'Research loaded',
     });
 
     debug.groq_model = settings.writer_model;

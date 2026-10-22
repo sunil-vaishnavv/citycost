@@ -46,6 +46,11 @@ import {
   type TopicListSort,
 } from './db/topics-repo.js';
 import { listArticles, getArticleById, deleteArticle } from './db/articles-repo.js';
+import {
+  retrieveGroundedCityCostData,
+  auditArticleClaimsAgainstRag,
+  auditTextClaimsAgainstRag,
+} from './rag/index.js';
 import { getLatestWriterGenerationDebug } from './db/generation-logs-repo.js';
 import { estimateGroqCostUsd } from './ai-cost.js';
 import {
@@ -148,6 +153,98 @@ export function createEditorialRouter(): Router {
   router.get('/health', async (_req, res) => {
     const health = await getEditorialHealth();
     res.status(health.ok ? 200 : 503).json(health);
+  });
+
+  /** RAG Status & Google Search Grounding capabilities */
+  router.get('/rag/status', async (_req, res) => {
+    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY);
+    return res.json({
+      ok: true,
+      engine: 'CityCost RAG Factual Grounding Engine v2.0',
+      model: 'gemini-3.8-flash',
+      search_grounding: hasGeminiKey ? 'active' : 'benchmark_fallback',
+      google_search_enabled: hasGeminiKey,
+      features: [
+        'Real-time Google Search Grounding for live rental prices and transit fares',
+        'Automated claim-by-claim quantitative fact checker',
+        'Inline citation references ([^1], [^2]) with domain and timestamp mapping',
+        'Deterministic municipal benchmark fallback (Austin, Seattle, Tokyo, Lisbon, NYC)',
+        'Automated quality audit gate blocking publishing when ungrounded claims exist',
+      ],
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  /** RAG Live Web & Google Search Grounding retrieval on demand */
+  router.post('/rag/retrieve', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const targetCity = typeof req.body?.targetCity === 'string' ? req.body.targetCity.trim() : '';
+      if (!targetCity) {
+        return res.status(400).json({ error: 'targetCity is required' });
+      }
+      const comparisonCity =
+        typeof req.body?.comparisonCity === 'string' ? req.body.comparisonCity.trim() : undefined;
+      const topicTitle =
+        typeof req.body?.topicTitle === 'string' ? req.body.topicTitle.trim() : undefined;
+      const category =
+        typeof req.body?.category === 'string' ? req.body.category.trim() : undefined;
+
+      const result = await retrieveGroundedCityCostData({
+        targetCity,
+        comparisonCity,
+        topicTitle,
+        category,
+      });
+
+      return res.json({ ok: true, data: result });
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message || 'Failed to retrieve grounded data' });
+    }
+  });
+
+  /** Claim-by-claim fact checker audit gate */
+  router.post('/rag/audit', requireEditorialAuth, requireOrigin, async (req, res) => {
+    try {
+      const articleId = Number(req.body?.articleId);
+      let blocks = req.body?.blocks;
+      let groundedFacts = req.body?.groundedFacts;
+      let sources = req.body?.sources;
+
+      if (Number.isFinite(articleId)) {
+        const article = await getArticleById(articleId);
+        if (!article) return res.status(404).json({ error: 'Article not found' });
+        const draft = article.draft_json as Record<string, unknown> | null;
+        if (!blocks && Array.isArray(draft?.blocks)) {
+          blocks = draft.blocks;
+        }
+        const research = article.research_pack_json as Record<string, unknown> | null;
+        if (!groundedFacts && Array.isArray(research?.grounded_facts)) {
+          groundedFacts = research.grounded_facts;
+        }
+        if (!sources && Array.isArray(research?.grounding_sources)) {
+          sources = research.grounding_sources;
+        }
+      }
+
+      if (!Array.isArray(groundedFacts) || groundedFacts.length === 0) {
+        const city = typeof req.body?.targetCity === 'string' ? req.body.targetCity : 'Austin';
+        const retrieved = await retrieveGroundedCityCostData({ targetCity: city });
+        groundedFacts = retrieved.facts;
+        sources = retrieved.sources;
+      }
+
+      const report = Array.isArray(blocks)
+        ? auditArticleClaimsAgainstRag(blocks, groundedFacts, sources || [])
+        : auditTextClaimsAgainstRag(
+            typeof req.body?.text === 'string' ? req.body.text : '',
+            groundedFacts,
+            sources || []
+          );
+
+      return res.json({ ok: true, report });
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message || 'Failed to audit claims' });
+    }
   });
 
   router.post('/auth/login', loginLimiter, requireOrigin, async (req, res) => {
