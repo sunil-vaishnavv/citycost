@@ -17,6 +17,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@google/genai": "^2.30.0",
     "@tailwindcss/vite": "^4.1.14",
     "@tanstack/react-virtual": "^3.14.9",
     "@tiptap/extension-image": "^3.30.0",
