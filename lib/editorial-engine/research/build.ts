@@ -22,7 +22,18 @@ import {
   type ResearchPack,
 } from './schema.js';
 import { validateResearchPack } from './validate.js';
-import { retrieveGroundedCityCostData, type RagRetrievalResult } from '../rag/index.js';
+import {
+  getRagModel,
+  GroundingRequiredError,
+  groundingArticlePolicy,
+  groundingRequiredForArticles,
+  retrieveGroundedCityCostData,
+  type GroundedGenerateFn,
+  type RagRetrievalResult,
+  type ResearchGroundingStatus,
+} from '../rag/index.js';
+import { toPublicTitle } from '../utils/clean-title.js';
+import { buildCalculationLedger } from './comparison-ledger.js';
 
 function slugify(input: string): string {
   return input
@@ -288,7 +299,9 @@ export function assembleResearchPack(
     }
   } else if (groundedRag) {
     known_data_gaps.push(
-      `No live web-sourced figures (${groundedRag.error || groundedRag.status}) — do not cite external statistics or [^n] footnotes`
+      groundedRag.status === 'blocked'
+        ? 'No external web research in this draft (Google grounding is not used for articles) — rely on CityCost data, label it as CityCost data, and do not cite external statistics or [^n] footnotes'
+        : `No live web-sourced figures (${groundedRag.error || groundedRag.status}) — do not cite external statistics or [^n] footnotes`
     );
   }
 
@@ -340,6 +353,8 @@ export function assembleResearchPack(
     related_countries,
     related_comparison_pages,
     internal_link_candidates,
+    geo_scope: ctx.geo,
+    calculation_ledger: buildCalculationLedger(ctx.geo?.city_page_slugs || []) ?? undefined,
     content_cluster,
     parent_pillar,
     child_articles: childArticlesFor(refs, countryName),
@@ -378,6 +393,8 @@ export function assembleResearchPack(
     rag_status: groundedRag?.status,
     rag_error: groundedRag && groundedRag.status !== 'live' ? groundedRag.error : undefined,
     rag_model: groundedRag?.model,
+    research_status: groundedRag ? researchStatusFor(groundedRag) : undefined,
+    grounding_trace: groundedRag?.trace,
   };
 
   pack.validation = validateResearchPack(pack);
@@ -398,37 +415,77 @@ export function buildResearchPack(
   return pack;
 }
 
+/** Map a retrieval outcome to the research readiness status recorded on the pack. */
+export function researchStatusFor(rag: RagRetrievalResult): ResearchGroundingStatus {
+  if (rag.status === 'live') return 'grounding_verified';
+  if (rag.status === 'blocked') return 'grounding_blocked';
+  if (rag.status === 'no_evidence') return 'evidence_insufficient';
+  return 'grounding_unavailable';
+}
+
 /**
- * Build + validate a Research Pack with live Google Search Grounding.
- * Grounding failures degrade to an ungrounded pack (with a data-gap note);
- * an invalid pack throws, same contract as buildResearchPack.
+ * Build + validate a Research Pack, with Google Search Grounding only when the
+ * grounding policy permits article use (see rag/grounding-policy.ts).
+ * - Policy blocked: no provider call; pack is labelled `grounding_blocked`.
+ * - Grounding failure: degrades to an ungrounded pack with a data-gap note,
+ *   unless EDITORIAL_REQUIRE_GROUNDING is on — then it fails closed.
+ * - An invalid pack throws, same contract as buildResearchPack.
  */
 export async function buildGroundedResearchPackAsync(
   topic: EditorialTopic,
   ctx: StructuredContextPack,
   apiKey?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Test seam: replaces the Gemini call (deterministic tests only). */
+  generate?: GroundedGenerateFn
 ): Promise<ResearchPack> {
+  const publicTitle = toPublicTitle(topic.title);
   const targetCity = ctx.comparison
     ? String(ctx.comparison.cityA)
     : ctx.city
       ? String(ctx.city.city)
-      : topic.title.split(':')[0].trim();
+      : publicTitle.split(':')[0].trim();
   const comparisonCity = ctx.comparison ? String(ctx.comparison.cityB) : undefined;
 
+  const policy = groundingArticlePolicy();
   let ragResult: RagRetrievalResult | null = null;
-  try {
-    ragResult = await retrieveGroundedCityCostData({
+  if (!policy.permitted) {
+    ragResult = {
+      status: 'blocked',
+      error_category: 'policy',
+      error: policy.reason,
+      query: '',
       targetCity,
       comparisonCity,
-      topicTitle: topic.title,
-      category: topic.content_type,
-      apiKey,
-      signal,
-    });
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    console.warn('⚠️ RAG live retrieval skipped in research pack build:', err);
+      sources: [],
+      facts: [],
+      factLines: [],
+      unsupportedDropped: 0,
+      retrievalTimestamp: new Date().toISOString(),
+      model: getRagModel(),
+    };
+  } else {
+    try {
+      ragResult = await retrieveGroundedCityCostData({
+        targetCity,
+        comparisonCity,
+        topicTitle: publicTitle,
+        category: topic.content_type,
+        apiKey,
+        signal,
+        generate,
+      });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      console.warn('⚠️ RAG live retrieval skipped in research pack build:', err);
+    }
+  }
+
+  if (groundingRequiredForArticles()) {
+    const status = ragResult ? researchStatusFor(ragResult) : 'grounding_unavailable';
+    if (status !== 'grounding_verified') {
+      throw new GroundingRequiredError(status, ragResult?.error || 'grounding did not run');
+    }
   }
 
   const pack = assembleResearchPack(topic, ctx, ragResult);

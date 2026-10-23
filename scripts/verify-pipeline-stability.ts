@@ -136,7 +136,7 @@ function ok(name: string): void {
 // ── 3. Readability repair improves score ─────────────────────────────
 {
   const long =
-    'Moreover it is important to note that furthermore the overall situation regarding housing costs in the metropolitan region continues to escalate dramatically for remote workers who relocate without adequate research into neighborhood pricing differentials and lease deposit customs that vary substantially.';
+    'Moreover it is important to note that furthermore the overall situation regarding housing costs in the metropolitan region continues to escalate dramatically for remote workers who relocate without adequate research into neighborhood pricing differentials, and lease deposit customs that vary substantially.';
   const draft: WriterDraftPayload = {
     seo_title: 'Dense',
     meta_title: 'Dense article about costs',

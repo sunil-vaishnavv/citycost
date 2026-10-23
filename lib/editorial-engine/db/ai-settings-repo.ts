@@ -3,6 +3,7 @@ import { pool } from '../../db.js';
 import { decryptApiKey, encryptApiKey, maskApiKey } from '../ai/crypto-keys.js';
 import { PROVIDER_DEFAULTS, getProviderDefaults } from '../ai/provider-config.js';
 import type { AiProviderName, ProviderRuntimeConfig } from '../ai/types.js';
+import type { ProviderModelMeta } from '../ai/model-catalog.js';
 import {
   ensureProviderEnvSlots,
   isPlaceholderApiKey,
@@ -41,7 +42,51 @@ function mapRow(row: RowDataPacket): ProviderRuntimeConfig & { id: number } {
     last_error: row.last_error != null ? String(row.last_error) : null,
     avg_latency_ms: row.avg_latency_ms != null ? Number(row.avg_latency_ms) : null,
     avg_cost_usd: row.avg_cost_usd != null ? Number(row.avg_cost_usd) : null,
+    meta: readModelMeta(row.meta_json),
   };
+}
+
+function readModelMeta(raw: unknown): ProviderModelMeta {
+  let obj: Record<string, unknown> = {};
+  if (raw && typeof raw === 'object') obj = raw as Record<string, unknown>;
+  else if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      obj = {};
+    }
+  }
+  const fallback = Array.isArray(obj.fallback_models)
+    ? obj.fallback_models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map((m) => m.trim())
+    : [];
+  const auto = obj.auto_model as ProviderModelMeta['auto_model'];
+  return {
+    fallback_models: fallback,
+    auto_model_fallback: obj.auto_model_fallback !== false,
+    auto_model: auto && typeof auto === 'object' && typeof auto.model === 'string' ? auto : null,
+  };
+}
+
+/** Merge keys into meta_json (JSONB) without touching other meta. */
+async function mergeProviderMeta(name: AiProviderName, patch: Record<string, unknown>): Promise<void> {
+  if (!pool) return;
+  await pool.execute(
+    `UPDATE editorial_ai_settings
+       SET meta_json = COALESCE(meta_json, '{}'::jsonb) || $1::jsonb,
+           updated_at = (NOW() AT TIME ZONE 'UTC')
+     WHERE provider_name = $2`,
+    [JSON.stringify(patch), name]
+  );
+}
+
+/** Remember the model the router switched to after the configured one failed. */
+export async function recordAutoModelSwitch(
+  name: AiProviderName,
+  info: { model: string; from: string | null; reason: string }
+): Promise<void> {
+  await mergeProviderMeta(name, {
+    auto_model: { ...info, reason: info.reason.slice(0, 300), at: new Date().toISOString() },
+  });
 }
 
 /**
@@ -294,6 +339,18 @@ export async function patchAiProviderSetting(
       name,
     ]
   );
+
+  // Model failover settings (meta_json): fallback list, auto toggle, reset of the auto-switch.
+  const metaPatch: Record<string, unknown> = {};
+  if (Array.isArray(patch.fallback_models)) {
+    metaPatch.fallback_models = (patch.fallback_models as unknown[])
+      .filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+      .map((m) => m.trim())
+      .slice(0, 8);
+  }
+  if (typeof patch.auto_model_fallback === 'boolean') metaPatch.auto_model_fallback = patch.auto_model_fallback;
+  if (patch.reset_auto_model === true || typeof patch.default_model === 'string') metaPatch.auto_model = null;
+  if (Object.keys(metaPatch).length) await mergeProviderMeta(name, metaPatch);
 
   const updated = await getAiProviderSetting(name);
   if (!updated) throw new Error('Update failed');

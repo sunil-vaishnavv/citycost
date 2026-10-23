@@ -61,8 +61,8 @@ export const DEFAULT_STRATEGY_WEIGHTS: StrategyWeights = {
 };
 
 export const DEFAULT_EDITORIAL_SETTINGS: EditorialSettings = {
-  writer_model: 'llama-3.3-70b-versatile',
-  reviewer_model: 'llama-3.3-70b-versatile',
+  writer_model: 'openai/gpt-oss-120b',
+  reviewer_model: 'openai/gpt-oss-120b',
   temperature: 0.45,
   top_p: 0.9,
   max_tokens: 16384,

@@ -58,7 +58,22 @@ interface ProviderCard {
   failures_today: number;
   success_rate: number;
   token_usage: number;
+  /** Models list came from the provider's live API (not the offline defaults). */
+  live_models?: boolean;
+  /** false when the saved default model is no longer offered by the provider. */
+  default_model_available?: boolean | null;
+  meta?: {
+    fallback_models?: string[];
+    auto_model_fallback?: boolean;
+    auto_model?: { model: string; from: string | null; reason: string; at: string } | null;
+  };
 }
+
+type ProviderDraft = Partial<ProviderCard> & {
+  api_key?: string;
+  auto_model_fallback?: boolean;
+  fallback_models_text?: string;
+};
 
 interface UsageSummary {
   total_requests: number;
@@ -96,9 +111,7 @@ export default function AiProvidersPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [drafts, setDrafts] = useState<Record<string, Partial<ProviderCard> & { api_key?: string }>>(
-    {}
-  );
+  const [drafts, setDrafts] = useState<Record<string, ProviderDraft>>({});
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, unknown>>({});
@@ -126,6 +139,8 @@ export default function AiProvidersPanel() {
           tpm_limit: prov.tpm_limit,
           daily_limit: prov.daily_limit,
           api_key: '',
+          auto_model_fallback: prov.meta?.auto_model_fallback !== false,
+          fallback_models_text: (prov.meta?.fallback_models || []).join(', '),
         };
       }
       setDrafts(next);
@@ -140,7 +155,7 @@ export default function AiProvidersPanel() {
     void load();
   }, [load]);
 
-  const patchDraft = (name: string, patch: Partial<ProviderCard> & { api_key?: string }) => {
+  const patchDraft = (name: string, patch: ProviderDraft) => {
     setDrafts((prev) => ({ ...prev, [name]: { ...prev[name], ...patch } }));
   };
 
@@ -160,6 +175,11 @@ export default function AiProvidersPanel() {
         rpm_limit: d.rpm_limit,
         tpm_limit: d.tpm_limit,
         daily_limit: d.daily_limit,
+        auto_model_fallback: d.auto_model_fallback !== false,
+        fallback_models: (d.fallback_models_text || '')
+          .split(',')
+          .map((m) => m.trim())
+          .filter(Boolean),
       };
       if (d.api_key && d.api_key.trim()) body.api_key = d.api_key.trim();
       const res = await api.patch<{ message: string }>(`/api/editorial/ai/providers/${name}`, body);
@@ -168,6 +188,20 @@ export default function AiProvidersPanel() {
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Save failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const resetAutoModel = async (name: string) => {
+    setBusy(`reset:${name}`);
+    setError('');
+    try {
+      await api.patch(`/api/editorial/ai/providers/${name}`, { reset_auto_model: true });
+      setMessage(`${name}: automatic model switch cleared — the default model is tried first again`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Reset failed');
     } finally {
       setBusy(null);
     }
@@ -362,13 +396,71 @@ export default function AiProvidersPanel() {
                             patchDraft(p.provider_name, { default_model: e.target.value })
                           }
                         >
-                          {(p.models || []).map((m) => (
+                          {[
+                            ...(p.default_model && !(p.models || []).includes(p.default_model)
+                              ? [p.default_model]
+                              : []),
+                            ...(p.models || []),
+                          ].map((m) => (
                             <option key={m} value={m}>
                               {m}
+                              {m === p.default_model && p.default_model_available === false ? ' (no longer offered)' : ''}
                             </option>
                           ))}
                         </Select>
                       </Field>
+                      <Field
+                        label="Auto-switch model on errors"
+                        hint="If a model is retired, rate-limited, out of credits or overloaded, the next model is tried automatically."
+                      >
+                        <Toggle
+                          checked={d.auto_model_fallback !== false}
+                          onChange={(v) => patchDraft(p.provider_name, { auto_model_fallback: v })}
+                        />
+                      </Field>
+                      <Field
+                        label="Fallback models (in order)"
+                        hint={`Comma-separated. ${p.live_models ? 'Choose from the live list below.' : 'Live list unavailable — using built-in list.'}`}
+                      >
+                        <Input
+                          list={`models-${p.provider_name}`}
+                          placeholder="e.g. model-a, model-b"
+                          value={d.fallback_models_text || ''}
+                          onChange={(e) =>
+                            patchDraft(p.provider_name, { fallback_models_text: e.target.value })
+                          }
+                        />
+                        <datalist id={`models-${p.provider_name}`}>
+                          {(p.models || []).slice(0, 200).map((m) => (
+                            <option key={m} value={m} />
+                          ))}
+                        </datalist>
+                      </Field>
+                      {(p.default_model_available === false || p.meta?.auto_model) && (
+                        <div className="sm:col-span-2 rounded-lg border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
+                          {p.default_model_available === false && (
+                            <p>
+                              Default model <code>{p.default_model}</code> is no longer offered by {p.label}.
+                            </p>
+                          )}
+                          {p.meta?.auto_model && (
+                            <p className="mt-1">
+                              Auto-switched to <code>{p.meta.auto_model.model}</code>
+                              {p.meta.auto_model.from ? ` (from ${p.meta.auto_model.from})` : ''} on{' '}
+                              {new Date(p.meta.auto_model.at).toLocaleString()} — {p.meta.auto_model.reason}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="ml-2"
+                                loading={busy === `reset:${p.provider_name}`}
+                                onClick={() => void resetAutoModel(p.provider_name)}
+                              >
+                                Reset
+                              </Button>
+                            </p>
+                          )}
+                        </div>
+                      )}
                       <Field
                         label="API key"
                         hint="Synced with .env — Save writes encrypted DB + env file. Leave blank to keep current."

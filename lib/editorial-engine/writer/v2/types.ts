@@ -255,6 +255,13 @@ export interface WriterV2Result {
       block_save: boolean;
       block_reasons: string[];
     };
+    /** Final public-integrity gate (QA markers, prose, TOC, links, figures). */
+    public_integrity_report?: {
+      ok: boolean;
+      errors: Array<{ code: string; message: string }>;
+      warnings: Array<{ code: string; message: string }>;
+      fixes: string[];
+    };
     final_words?: number;
     section_actuals?: Array<{
       key: string;

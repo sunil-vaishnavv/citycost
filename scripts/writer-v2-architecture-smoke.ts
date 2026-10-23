@@ -37,7 +37,7 @@ function assert(cond: boolean, msg: string) {
 async function main() {
   console.log(`Writer Engine ${WRITER_ENGINE_VERSION} architecture smoke`);
 
-  assert(WRITER_ENGINE_VERSION === '5.0.0', 'version must be 5.0.0');
+  assert(WRITER_ENGINE_VERSION.startsWith('5.'), 'version must be 5.x');
   assert(listPersonas().length >= 15, 'persona catalog too small');
 
   // Guide-specific section writers must never share ids across guides

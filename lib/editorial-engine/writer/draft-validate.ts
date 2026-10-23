@@ -136,6 +136,17 @@ function blockText(block: DraftBlock): string {
   }
   if (block.content && typeof block.content === 'object') {
     const o = block.content as Record<string, unknown>;
+    if (Array.isArray(o.headers) || Array.isArray(o.rows)) {
+      const parts: string[] = [];
+      if (Array.isArray(o.headers)) parts.push(...o.headers.map(String));
+      if (Array.isArray(o.rows)) {
+        for (const r of o.rows) {
+          if (Array.isArray(r)) parts.push(...r.map(String));
+          else if (typeof r === 'string') parts.push(r);
+        }
+      }
+      return parts.join(' ');
+    }
     const preferred = ['text', 'body', 'html', 'markdown', 'content']
       .map((k) => o[k])
       .filter((v): v is string => typeof v === 'string');
@@ -315,6 +326,8 @@ export function sanitizeBlocks(blocks: DraftBlock[]): DraftBlock[] {
       type === 'intro' ||
       type === 'faq' ||
       type === 'summary' ||
+      type === 'table' ||
+      type === 'comparison' ||
       (type === 'list' && /table of contents|^contents$/i.test(heading));
 
     if (type === 'heading') {
@@ -336,7 +349,7 @@ export function sanitizeBlocks(blocks: DraftBlock[]): DraftBlock[] {
     // Drop tiny filler paragraphs — never drop protected intro/faq/summary/toc
     if (
       !isProtectedType &&
-      (type === 'paragraph' || type === 'intro' || type === 'summary') &&
+      type === 'paragraph' &&
       text.split(/\s+/).length < 12
     ) {
       continue;
@@ -463,7 +476,11 @@ export interface DraftValidationResult {
 export function validateWriterDraft(
   draft: WriterDraftPayload,
   limits: { min: number; max: number },
-  research?: ResearchPack | null
+  research?: ResearchPack | null,
+  opts?: {
+    /** Link floor for this article (≤ relevant destinations available); default MIN_CITYCOST_PATH_MENTIONS. */
+    min_internal_links?: number;
+  }
 ): DraftValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -608,9 +625,10 @@ export function validateWriterDraft(
 
   // Internal links: real CityCost public paths (and legacy aliases)
   const linkHits = countCityCostPathMentionsInText(corpus);
-  if (linkHits < MIN_CITYCOST_PATH_MENTIONS) {
+  const linkFloor = opts?.min_internal_links ?? MIN_CITYCOST_PATH_MENTIONS;
+  if (linkHits < linkFloor) {
     errors.push(
-      `Missing internal links (found ${linkHits}, need ≥ ${MIN_CITYCOST_PATH_MENTIONS} CityCost path mentions)`
+      `Missing internal links (found ${linkHits}, need ≥ ${linkFloor} CityCost path mentions)`
     );
     missing_elements.push('internal_links');
   } else if (linkHits < 6) {

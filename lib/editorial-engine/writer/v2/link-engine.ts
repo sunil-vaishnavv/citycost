@@ -21,6 +21,13 @@ import {
 import { isProtectedBlock } from './block-integrity.js';
 import { draftSectionChunks } from './section-chunks.js';
 import { blockPlain } from './content-quality/text-metrics.js';
+import {
+  filterRelevantHrefs,
+  internalLinkFloor,
+  judgeLink,
+  resolveSiteRoute,
+  type LinkGeoScope,
+} from './link-relevance.js';
 
 export interface NaturalLinkReport {
   natural_anchors_fixed: number;
@@ -37,6 +44,10 @@ export interface LinkEngineReport extends NaturalLinkReport {
   paths_injected: string[];
   /** Repair attempts used to reach minimum. */
   repair_rounds: number;
+  /** Links unlinked because the destination is irrelevant or not a real route. */
+  irrelevant_removed?: string[];
+  /** Floor applied this run (≤ relevant destinations available). */
+  need?: number;
   ok: boolean;
 }
 
@@ -53,7 +64,6 @@ export const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g;
 export const LINK_ENGINE_FALLBACK_HREFS = [
   '/methodology',
   '/data-sources',
-  '/about',
 ] as const;
 
 const STOP_WORDS = new Set([
@@ -404,9 +414,28 @@ export function validateInternalLinks(
   };
 }
 
-function appendNaturalLink(content: unknown, href: string): unknown {
+/** Contextual sentence per destination type — avoids repeating one generic CTA. */
+function naturalLinkSentence(href: string, variant: number): string {
   const label = slugToNaturalLabel(href);
-  const sentence = ` For related planning context, see [${label}](${href}).`;
+  const route = resolveSiteRoute(href);
+  if (route?.kind === 'static' && route.href === '/methodology') {
+    return ` How these estimates are built is explained in our [methodology](${href}).`;
+  }
+  if (route?.kind === 'static' && route.href === '/data-sources') {
+    return ` The underlying sources are listed on the [data sources page](${href}).`;
+  }
+  if (route?.kind === 'city') {
+    return variant % 2
+      ? ` Current item prices are on the [${label} cost of living page](${href}).`
+      : ` For a fuller price breakdown, see [${label} living costs](${href}).`;
+  }
+  if (route?.kind === 'country') return ` National averages are summarised in the [${label} overview](${href}).`;
+  if (route?.kind === 'compare') return ` A side-by-side view is in [${label}](${href}).`;
+  return ` See [${label}](${href}).`;
+}
+
+function appendNaturalLink(content: unknown, href: string, variant = 0): unknown {
+  const sentence = naturalLinkSentence(href, variant);
   if (typeof content === 'string') return `${content.trim()}${sentence}`;
   if (content && typeof content === 'object' && !Array.isArray(content)) {
     const obj = { ...(content as Record<string, unknown>) };
@@ -438,10 +467,16 @@ function eligibleBodyIndices(blocks: DraftBlock[]): number[] {
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
     if (!b || isProtectedBlock(b)) continue;
-    if (b.type === 'heading') continue;
-    if (typeof b.content === 'string' && b.content.trim()) idxs.push(i);
-    else if (b.content && typeof b.content === 'object' && !Array.isArray(b.content)) {
+    if (b.type === 'heading' || b.type === 'table') continue;
+    if (typeof b.content === 'string' && b.content.trim()) {
       idxs.push(i);
+    } else if (b.content && typeof b.content === 'object' && !Array.isArray(b.content)) {
+      const o = b.content as Record<string, unknown>;
+      if (Array.isArray(o.headers) || Array.isArray(o.rows)) continue;
+      const hasTextKey = ['text', 'body', 'html', 'markdown', 'content'].some(
+        (k) => typeof o[k] === 'string' && (o[k] as string).trim()
+      );
+      if (hasTextKey) idxs.push(i);
     }
   }
   return idxs;
@@ -498,7 +533,7 @@ export function generateMissingLinks(
     const target = blocks[idx]!;
     blocks[idx] = {
       ...target,
-      content: appendNaturalLink(target.content, href) as DraftBlock['content'],
+      content: appendNaturalLink(target.content, href, created) as DraftBlock['content'],
     };
     created += 1;
     paths_injected.push(href);
@@ -518,6 +553,40 @@ export interface RunInternalLinkEngineInput {
   min?: number;
   /** Max repair rounds of generateMissingLinks (default 3). */
   max_repair_rounds?: number;
+  /**
+   * Article geography. When set, links to irrelevant / non-existent routes are
+   * unlinked, only relevant candidates are injected, and the floor never exceeds
+   * the number of relevant destinations.
+   */
+  scope?: LinkGeoScope;
+}
+
+const SITE_LINK_RE = /\[([^\]]+)\]\(((?:https?:\/\/(?:www\.)?citycost\.online)?\/[^)\s]*)\)/gi;
+
+/** Replace irrelevant / non-existent internal links with their plain anchor text. */
+export function unlinkIrrelevantLinks(
+  draft: WriterDraftPayload,
+  scope: LinkGeoScope
+): { draft: WriterDraftPayload; removed: string[] } {
+  const removed: string[] = [];
+  const fix = (text: string) =>
+    text.replace(SITE_LINK_RE, (whole, label: string, href: string) => {
+      if (judgeLink(href, scope) === 'relevant') return whole;
+      removed.push(href);
+      return label;
+    });
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return fix(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const o: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = walk(val);
+      return o;
+    }
+    return v;
+  };
+  const blocks = (draft.blocks || []).map((b) => ({ ...b, content: walk(b.content) as DraftBlock['content'] }));
+  return { draft: { ...draft, blocks }, removed };
 }
 
 /**
@@ -528,11 +597,19 @@ export function runInternalLinkEngine(input: RunInternalLinkEngineInput): {
   draft: WriterDraftPayload;
   report: LinkEngineReport;
 } {
-  const need = input.min ?? MIN_CITYCOST_PATH_MENTIONS;
   const maxRounds = input.max_repair_rounds ?? 3;
-  const candidates = resolveLinkCandidates(input.candidates || []);
-
+  let candidates = resolveLinkCandidates(input.candidates || []);
   let draft = input.draft;
+  let irrelevant_removed: string[] = [];
+  let need = input.min ?? MIN_CITYCOST_PATH_MENTIONS;
+  if (input.scope) {
+    const un = unlinkIrrelevantLinks(draft, input.scope);
+    draft = un.draft;
+    irrelevant_removed = un.removed;
+    candidates = filterRelevantHrefs(candidates, input.scope);
+    need = Math.min(need, internalLinkFloor(candidates.length));
+  }
+
   let natural_anchors_fixed = 0;
   let links_trimmed = 0;
   const sections_touched = new Set<string>();
@@ -579,6 +656,8 @@ export function runInternalLinkEngine(input: RunInternalLinkEngineInput): {
       links_created,
       paths_injected,
       repair_rounds,
+      irrelevant_removed,
+      need,
       ok: validation.ok,
     },
   };
@@ -591,6 +670,8 @@ export function formatLinkEngineDebug(report: LinkEngineReport): string {
     `repair_rounds=${report.repair_rounds}`,
     `anchors_fixed=${report.natural_anchors_fixed}`,
     `trimmed=${report.links_trimmed}`,
+    `need=${report.need ?? MIN_CITYCOST_PATH_MENTIONS}`,
+    `irrelevant_removed=${report.irrelevant_removed?.length ?? 0}`,
     `ok=${report.ok ? 'yes' : 'no'}`,
     report.paths_injected.length
       ? `injected=${report.paths_injected.slice(0, 6).join('|')}`

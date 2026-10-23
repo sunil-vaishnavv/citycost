@@ -693,11 +693,31 @@ export interface RagAuditReport {
   auditedAt: string;
 }
 
-export type RagRetrievalStatus = 'live' | 'no_evidence' | 'unavailable' | 'error';
+export type RagRetrievalStatus = 'live' | 'no_evidence' | 'unavailable' | 'blocked' | 'error';
+
+export interface RagGroundingTrace {
+  request_id: string;
+  model: string;
+  tool: string;
+  latency_ms: number;
+  status: RagRetrievalStatus;
+  error_category?: string;
+  web_search_queries: number;
+  grounding_chunks: number;
+  grounding_supports: number;
+  sources: number;
+  facts: number;
+}
 
 export interface RagRetrievalResult {
   status: RagRetrievalStatus;
   error?: string;
+  error_category?: string;
+  trace?: RagGroundingTrace;
+  /** Ephemeral grounded answer for the requesting editor — never stored. */
+  display?: { text: string; search_entry_point_html?: string; web_search_queries: string[] };
+  /** Parsed claims withheld because article use of grounding is not permitted. */
+  facts_withheld?: number;
   unsupportedDropped?: number;
   query: string;
   targetCity: string;
@@ -715,6 +735,9 @@ export interface RagStatusResponse {
   model: string;
   search_grounding: string;
   google_search_enabled: boolean;
+  article_use_permitted?: boolean;
+  article_use_reason?: string;
+  grounding_required_for_articles?: boolean;
   features: string[];
   timestamp: string;
 }

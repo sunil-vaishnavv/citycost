@@ -1,5 +1,6 @@
 import Groq from 'groq-sdk';
 import dotenv from 'dotenv';
+import { classifyModelError, getLiveModels, statusFromError } from './editorial-engine/ai/model-catalog.js';
 import type { PriceItem, IndexMetrics } from '../src/types.js';
 
 dotenv.config();
@@ -29,6 +30,36 @@ export function reconfigureGroqClient(): void {
 }
 
 reconfigureGroqClient();
+
+/** Preferred Groq chat models (Groq retires models; the live list is consulted first). */
+const GROQ_PREFERRED_MODELS = ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b'];
+
+/**
+ * chat.completions.create with automatic model failover: retired / rate-limited /
+ * overloaded models are skipped; an auth error stops immediately.
+ */
+async function groqChatWithModelFallback(
+  client: Groq,
+  params: Omit<Parameters<Groq['chat']['completions']['create']>[0], 'model' | 'stream'>
+): Promise<Groq.Chat.Completions.ChatCompletion> {
+  const live = await getLiveModels('groq', groqClientKey);
+  const models = [
+    ...GROQ_PREFERRED_MODELS.filter((m) => !live || live.includes(m)),
+    ...(live || []).filter((m) => !GROQ_PREFERRED_MODELS.includes(m)),
+  ].slice(0, 4);
+  let lastErr: unknown = null;
+  for (const model of models) {
+    try {
+      return (await client.chat.completions.create({ ...params, model, stream: false })) as Groq.Chat.Completions.ChatCompletion;
+    } catch (err) {
+      lastErr = err;
+      const kind = classifyModelError((err as Error).message || '', statusFromError(err));
+      if (kind === 'auth') throw err;
+      console.warn(`[Groq] model ${model} failed (${kind}) — trying next model`);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('All Groq models failed');
+}
 
 interface GeneratedCityData {
   city: string;
@@ -163,12 +194,11 @@ Rules:
     try {
       console.log(`[Groq] Generating city data for "${cityQuery}" (attempt ${attempt + 1}/3)...`);
 
-      const chatCompletion = await groq.chat.completions.create({
+      const chatCompletion = await groqChatWithModelFallback(groq, {
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        model: 'llama-3.3-70b-versatile',
         temperature: 0.2,
         max_tokens: 4096,
         response_format: { type: 'json_object' },
@@ -261,9 +291,8 @@ Keep it concise, professional, and easy to understand. Plain text only, no markd
     try {
       console.log(`[Groq] Generating summary for ${cityA} vs ${cityB} (attempt ${attempt + 1}/3)...`);
 
-      const chatCompletion = await groq.chat.completions.create({
+      const chatCompletion = await groqChatWithModelFallback(groq, {
         messages: [{ role: 'user', content: prompt }],
-        model: 'llama-3.3-70b-versatile',
         temperature: 0.7,
         max_tokens: 1024,
       });

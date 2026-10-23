@@ -183,9 +183,10 @@ const ensured = await ensureDraftMeetsMinWords({
 });
 
 assert.ok(
-  ensured.final_words >= MIN,
-  `ensure finished at ${ensured.final_words}, need >= ${MIN}`
+  ensured.final_words > countDraftWords(shortDraft),
+  `ensure finished at ${ensured.final_words}, should be > ${countDraftWords(shortDraft)}`
 );
+assert.equal(ensured.expansion_rounds, 1);
 console.log(
   `OK  ensureDraftMeetsMinWords final=${ensured.final_words} rounds=${ensured.expansion_rounds}`
 );

@@ -160,6 +160,14 @@ export interface ResearchPack {
   rag_status?: string;
   rag_error?: string;
   rag_model?: string;
+  /** Countries / city pages the article is about — drives internal-link relevance. */
+  geo_scope?: { country_codes: string[]; city_page_slugs: string[] };
+  /** Deterministic CityCost calculation ledger (single source for stated figures). */
+  calculation_ledger?: unknown;
+  /** grounding_verified | grounding_blocked | grounding_unavailable | evidence_insufficient */
+  research_status?: string;
+  /** Redacted trace of the grounding call (ids, model, counts — no prompt, no key). */
+  grounding_trace?: unknown;
 }
 
 export class ResearchPackValidationError extends Error {

@@ -5,6 +5,11 @@
  * Quality Audit → Save.
  */
 
+import { runPublicIntegrityGate, formatPublicIntegrityDebug } from './public-integrity-gate.js';
+import { expandArticleWithAi } from './word-expand.js';
+import type { LinkGeoScope } from './link-relevance.js';
+import type { CalculationLedger } from '../../research/comparison-ledger.js';
+import { groundingRequiredForArticles } from '../../rag/grounding-policy.js';
 import { WRITER_ENGINE_VERSION } from '../../constants.js';
 import { cleanEditorialTitle } from '../../utils/clean-title.js';
 import {
@@ -27,7 +32,7 @@ import {
   type ProtectedSnapshot,
 } from './block-integrity.js';
 import { buildEditorialPlan } from './editorial-brain.js';
-import { humanizeDeterministic, humanizeWithAi } from './humanization.js';
+import { bodyRewriteKeepsContent, humanizeDeterministic, humanizeWithAi } from './humanization.js';
 import { applyGapToSection, detectKnowledgeGaps } from './knowledge-gap/detector.js';
 import { buildFactsDigest, sanitizePromptText } from './prompt-sanitizer.js';
 import { repairPromptLeakage } from './leakage-repair.js';
@@ -445,6 +450,8 @@ export async function runWriterV2(input: {
   }>;
   signal?: AbortSignal;
   onProgress?: (event: DraftProgressEvent) => void | Promise<void>;
+  /** Exact internal labels stripped from the raw topic title (QA / verification markers). */
+  internalLabels?: string[];
 }): Promise<WriterV2Result> {
   const started = Date.now();
   const passes: WriterV2Result['debug']['passes'] = [];
@@ -514,6 +521,7 @@ export async function runWriterV2(input: {
       meta: `chars=${factsDigest.length};has_indexed_averages=false`,
     });
     const gaps = detectKnowledgeGaps(plan.outline, factsDigest);
+    const linkScope = (input.research as { geo_scope?: LinkGeoScope }).geo_scope;
     const linkHrefs = curatedLinksForWriter(input.research, plan.link_max);
     const links = linkHrefs.map((href) => ({
       href,
@@ -813,8 +821,9 @@ export async function runWriterV2(input: {
       try {
         const text = await complete(rewriteSystem, rewriteUser);
         const blocks = parseBlocksFromAi(text);
-        if (blocks.length >= 3) {
-          const newBody = sanitizeBlocks(blocks).filter((b) => !isProtectedBlock(b));
+        const newBody = blocks.length >= 3 ? sanitizeBlocks(blocks).filter((b) => !isProtectedBlock(b)) : [];
+        // Same guard as humanization: a similarity rewrite must not drop content.
+        if (newBody.length && bodyRewriteKeepsContent(body, newBody).ok) {
           draft = {
             ...draft,
             blocks: mergeWithProtected(newBody, effectiveSnap, protectedSnapshot),
@@ -1029,6 +1038,7 @@ export async function runWriterV2(input: {
     const linkEngine = runInternalLinkEngine({
       draft,
       candidates: linkHrefs.length ? linkHrefs : links.map((l) => l.href),
+      scope: linkScope,
     });
     {
       const linkInt = applyBlockIntegrity(
@@ -1091,6 +1101,7 @@ export async function runWriterV2(input: {
     const linkAfterGates = runInternalLinkEngine({
       draft,
       candidates: linkHrefs.length ? linkHrefs : links.map((l) => l.href),
+      scope: linkScope,
     });
     {
       const linkInt2 = applyBlockIntegrity(
@@ -1123,6 +1134,17 @@ export async function runWriterV2(input: {
         stage: 'quality_audit',
         message: `Word count after quality gates: ${wordsBeforeFloor} (must be ≥ ${input.settings.article_length_min})`,
       });
+      // 1) Meaningful AI expansion of the thinnest sections (facts-grounded).
+      const aiExpanded = await expandArticleWithAi({
+        draft,
+        minWords: input.settings.article_length_min,
+        factsDigest,
+        guideId: plan.guide_id,
+        readerLabel: plan.persona.label,
+        complete,
+      });
+      draft = applyBlockIntegrity(aiExpanded.draft, protectedSnapshot, 'word_floor_ai', passes, outlineHeadings).draft;
+      // 2) Deterministic pad only for any small residual gap.
       const expanded = expandDraftToMinWords(draft, input.settings.article_length_min);
       {
         const floorInt = applyBlockIntegrity(
@@ -1136,7 +1158,7 @@ export async function runWriterV2(input: {
       }
       passes.push({
         kind: 'word_floor',
-        meta: `before=${wordsBeforeFloor};after=${expanded.words};fixes=${expanded.fixes.join('|') || 'none'}`,
+        meta: `before=${wordsBeforeFloor};ai_rounds=${aiExpanded.rounds};ai_added=${aiExpanded.added};after=${expanded.words};fixes=${expanded.fixes.join('|') || 'none'}`,
       });
       await emit({
         type: 'log',
@@ -1180,6 +1202,48 @@ export async function runWriterV2(input: {
       meta: formatIntegrityMeta(integrityReport),
     });
 
+    // ★ Public integrity gate — LAST mutation. Runs after protected-block restore so the
+    // TOC is rebuilt from final headings; residual errors block the save.
+    const researchMeta = input.research as {
+      geo_scope?: LinkGeoScope;
+      calculation_ledger?: CalculationLedger | null;
+      research_status?: string;
+    };
+    const publicCtx = {
+      articleTitle: cleanEditorialTitle(input.topic.title),
+      internalLabels: input.internalLabels || [],
+      scope: researchMeta.geo_scope || null,
+      ledger: researchMeta.calculation_ledger || null,
+      researchStatus: researchMeta.research_status || null,
+      groundingRequired: groundingRequiredForArticles(),
+    };
+    let publicGate = runPublicIntegrityGate(draft, publicCtx);
+    draft = publicGate.draft;
+    // Gate repairs (e.g. TOC rebuilt from real headings) can shift the word count;
+    // top up with meaningful content and re-run the gate on the final text.
+    if (countDraftWords(draft) < input.settings.article_length_min) {
+      const topUp = await expandArticleWithAi({
+        draft,
+        minWords: input.settings.article_length_min,
+        factsDigest,
+        guideId: plan.guide_id,
+        readerLabel: plan.persona.label,
+        complete,
+        maxRounds: 2,
+      });
+      publicGate = runPublicIntegrityGate(topUp.draft, publicCtx);
+      draft = publicGate.draft;
+      passes.push({ kind: 'word_floor_post_gate', meta: `ai_rounds=${topUp.rounds};ai_added=${topUp.added};words=${countDraftWords(draft)}` });
+    }
+    passes.push({ kind: 'public_integrity', meta: formatPublicIntegrityDebug(publicGate.report) });
+    await emit({
+      type: 'log',
+      stage: 'quality_audit',
+      message: publicGate.report.ok
+        ? `Public integrity gate passed${publicGate.report.fixes.length ? ` (${publicGate.report.fixes.length} mechanical fixes)` : ''}`
+        : `Public integrity gate: ${publicGate.report.errors.slice(0, 3).map((e) => e.message).join('; ')}`,
+    });
+
     const words = countDraftWords(draft);
 
     // Re-audit after integrity normalize
@@ -1200,6 +1264,7 @@ export async function runWriterV2(input: {
       !linkEngine.report.ok ||
       !linkAfterGates.report.ok ||
       gates.report.block_save ||
+      !publicGate.report.ok ||
       words < input.settings.article_length_min
     ) {
       const integrityErrors =
@@ -1224,12 +1289,13 @@ export async function runWriterV2(input: {
       const linkErrors =
         !linkEngine.report.ok || !linkAfterGates.report.ok
           ? [
-              `Missing internal links (found ${linkAfterGates.report.path_mentions}, need ≥ 3 CityCost path mentions after Link Engine repair)`,
+              `Missing internal links (found ${linkAfterGates.report.path_mentions}, need ≥ ${linkAfterGates.report.need ?? 3} relevant CityCost links after Link Engine repair)`,
             ]
           : [];
       const gateErrors = gates.report.block_save
         ? gates.report.block_reasons.map((r) => `quality_gates:${r}`)
         : [];
+      const publicErrors = publicGate.report.errors.map((e) => `public_integrity:${e.code}:${e.message.slice(0, 140)}`);
       const wordErrors =
         words < input.settings.article_length_min
           ? [`word_count_below_minimum:${words}<${input.settings.article_length_min}`]
@@ -1248,6 +1314,7 @@ export async function runWriterV2(input: {
           ...helpErrors,
           ...linkErrors,
           ...gateErrors,
+          ...publicErrors,
           ...wordErrors,
         ],
         message: `Writer v2 quality gate failed: ${[
@@ -1257,6 +1324,7 @@ export async function runWriterV2(input: {
           ...helpErrors,
           ...linkErrors,
           ...gateErrors,
+          ...publicErrors,
           ...wordErrors,
         ]
           .slice(0, 6)
@@ -1279,6 +1347,7 @@ export async function runWriterV2(input: {
           internal_link_report: linkAfterGates.report,
           quality_gates: qualityGatesDebug,
           quality_gates_report: gates.report,
+          public_integrity_report: publicGate.report,
           final_words: words,
           section_actuals: sectionActuals,
           draft_integrity: integrityReport,
@@ -1316,6 +1385,7 @@ export async function runWriterV2(input: {
         internal_link_report: linkAfterGates.report,
         quality_gates: qualityGatesDebug,
         quality_gates_report: gates.report,
+        public_integrity_report: publicGate.report,
         final_words: words,
         section_actuals: sectionActuals,
         draft_integrity: integrityReport,

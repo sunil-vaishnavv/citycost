@@ -458,7 +458,8 @@ export default function ManualBlogEditor({
     <div className="space-y-4">
       <div ref={errorBannerRef} className="space-y-3">
         {error && (
-          <Callout tone="rose" title="Unable to complete action">
+          <Callout tone="rose">
+            <div className="font-semibold mb-1">Unable to complete action</div>
             {error}
           </Callout>
         )}

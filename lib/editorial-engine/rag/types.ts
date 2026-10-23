@@ -59,18 +59,67 @@ export interface RagAuditReport {
 
 /**
  * - `live`: Google Search grounding returned at least one source-backed fact.
- * - `no_evidence`: the call succeeded but no statement was attributed to a source.
- * - `unavailable`: grounding is not configured (no GEMINI_API_KEY).
- * - `error`: the call failed (bad model, quota, timeout, network).
+ * - `no_evidence`: the call succeeded but no statement was attributed to a source
+ *   (includes responses with no grounding metadata at all).
+ * - `unavailable`: grounding is not configured (no real GEMINI_API_KEY).
+ * - `blocked`: not attempted because policy forbids this use (see grounding-policy.ts).
+ * - `error`: the call failed (auth, bad model, quota, rate limit, timeout, network).
  * Only `live` results carry facts/sources; nothing is ever synthesized.
  */
-export type RagRetrievalStatus = 'live' | 'no_evidence' | 'unavailable' | 'error';
+export type RagRetrievalStatus = 'live' | 'no_evidence' | 'unavailable' | 'blocked' | 'error';
+
+export type RagErrorCategory =
+  | 'missing_key'
+  | 'policy'
+  | 'auth'
+  | 'rate_limited'
+  | 'quota_exhausted'
+  | 'unsupported_model'
+  | 'timeout'
+  | 'network'
+  | 'blocked_request'
+  | 'metadata_missing'
+  | 'no_supported_claims'
+  | 'unknown';
+
+/** Redacted runtime trace of one grounding call (no key, no prompt text). */
+export interface GroundingTrace {
+  request_id: string;
+  provider: 'google-genai';
+  model: string;
+  tool: 'googleSearch';
+  started_at: string;
+  latency_ms: number;
+  status: RagRetrievalStatus;
+  error_category?: RagErrorCategory;
+  finish_reason?: string;
+  web_search_queries: number;
+  grounding_chunks: number;
+  grounding_supports: number;
+  sources: number;
+  facts: number;
+  unsupported_dropped: number;
+}
+
+/**
+ * Ephemeral display payload for the admin who submitted the lookup.
+ * Terms: show unmodified with Search Suggestions; never persist or reuse.
+ */
+export interface GroundingDisplay {
+  text: string;
+  search_entry_point_html?: string;
+  web_search_queries: string[];
+}
 
 export interface RagRetrievalResult {
   topicId?: number;
   status: RagRetrievalStatus;
+  error_category?: RagErrorCategory;
   /** Human-readable reason when status is not `live`. */
   error?: string;
+  trace?: GroundingTrace;
+  /** Present only when explicitly requested for interactive display. Never persist. */
+  display?: GroundingDisplay;
   query: string;
   targetCity: string;
   comparisonCity?: string;

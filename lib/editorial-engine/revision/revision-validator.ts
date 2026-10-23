@@ -3,6 +3,10 @@
  * Heading uniquify uses the single headingFingerprint algorithm from normalize-draft.
  */
 
+import { repairPublicIntegrity } from '../writer/v2/public-integrity-gate.js';
+import { filterRelevantHrefs, type LinkGeoScope } from '../writer/v2/link-relevance.js';
+import { toPublicTitle } from '../utils/clean-title.js';
+import { repairCorruptSentenceBreaks, safeSplitLongSentence } from '../writer/v2/prose-integrity.js';
 import type { IssueCategory } from '../validation/issue-plan.js';
 import { uniquifyHeadingsByFingerprint } from '../validation/normalize-draft.js';
 import {
@@ -85,17 +89,13 @@ export function uniquifyHeadings(draft: WriterDraftPayload): {
   return { draft: { ...draft, blocks: result.blocks }, fixes: result.fixes };
 }
 
-/** Target ~15–20 words/sentence for readability repair. */
+/**
+ * Target ~15–20 words/sentence for readability repair. Splits only at real
+ * clause boundaries (see safeSplitLongSentence); the old midpoint split produced
+ * corrupt prose like "requires. looking" and split numbers such as "$1,520".
+ */
 function splitLongSentence(sentence: string, maxWords = 20): string[] {
-  const words = sentence.trim().split(/\s+/).filter(Boolean);
-  if (words.length <= maxWords) return [sentence.trim()];
-  const joined = words.join(' ');
-  const comma = joined.lastIndexOf(',', Math.floor(joined.length / 2));
-  if (comma > 20) {
-    return [joined.slice(0, comma).trim() + '.', joined.slice(comma + 1).trim()].filter(Boolean);
-  }
-  const mid = Math.ceil(words.length / 2);
-  return [words.slice(0, mid).join(' ') + '.', words.slice(mid).join(' ')].filter(Boolean);
+  return safeSplitLongSentence(sentence, maxWords);
 }
 
 function splitDenseParagraph(text: string): string {
@@ -145,23 +145,27 @@ function repairText(text: string, mode: 'readability' | 'style'): { text: string
       t = simplified;
       changed = true;
     }
-    // Split on sentence ends and heavy clauses (semicolons / em dashes)
-    const sentences = t
-      .replace(/\s*[;–—]\s+/g, '. ')
-      .split(/(?<=[.!?])\s+/);
-    const rebuilt: string[] = [];
-    for (const s of sentences) {
-      const trimmed = s.trim();
-      if (!trimmed) continue;
-      const parts = splitLongSentence(trimmed, 18);
-      if (parts.length > 1) changed = true;
-      for (let part of parts) {
-        part = part.trim();
-        if (!/[.!?]$/.test(part)) part += '.';
-        rebuilt.push(part);
-      }
-    }
-    t = rebuilt.join(' ');
+    // Paragraph by paragraph so blank lines, markdown lists, tables and headings survive.
+    // Long sentences are split only at safe clause boundaries.
+    t = t
+      .split(/\n{2,}/)
+      .map((para) => {
+        if (/^\s*(?:[-*+|#>]|\d+[.)])\s/m.test(para)) return para;
+        const rebuilt: string[] = [];
+        for (const s of para.split(/(?<=[.!?])\s+/)) {
+          const trimmed = s.trim();
+          if (!trimmed) continue;
+          const parts = splitLongSentence(trimmed, 18);
+          if (parts.length > 1) changed = true;
+          for (let part of parts) {
+            part = part.trim();
+            if (!/[.!?:)\]]$/.test(part)) part += '.';
+            rebuilt.push(part);
+          }
+        }
+        return repairCorruptSentenceBreaks(rebuilt.join(' ')).text;
+      })
+      .join('\n\n');
     const split = splitDenseParagraph(t);
     if (split !== t) {
       t = split;
@@ -479,6 +483,8 @@ export function applyDeterministicRepairs(
     linkCandidates?: string[];
     /** When set (STRUCTURE + word_count_low), expand thin sections to this floor */
     expandToMinWords?: number;
+    /** Article geography — link candidates are filtered to relevant, existing routes. */
+    linkScope?: LinkGeoScope | null;
   }
 ): {
   draft: WriterDraftPayload;
@@ -515,7 +521,8 @@ export function applyDeterministicRepairs(
   if (category === 'READABILITY') {
     let textFixes = 0;
     blocks = blocks.map((b) => {
-      if (b.type === 'heading') return b;
+      // Tables / comparisons hold data cells and the TOC holds headings — never re-punctuate them.
+      if (b.type === 'heading' || b.type === 'table' || b.type === 'comparison' || b.id === 'toc') return b;
       if (allow && !allow.has(b.id)) return b;
       const r = repairBlockContent(b.content, 'readability');
       if (r.changed) textFixes += 1;
@@ -567,20 +574,33 @@ export function applyDeterministicRepairs(
     seo_title = metaPass.draft.seo_title || seo_title;
     fixes.push(...metaPass.fixes);
     // Body links: scan all paragraphs (allow-list is too narrow for link injection)
-    const linkPass = injectBodyLinks(blocks, null, opts?.linkCandidates || []);
+    const candidates = opts?.linkScope
+      ? filterRelevantHrefs(opts.linkCandidates || [], opts.linkScope)
+      : opts?.linkCandidates || [];
+    const linkPass = injectBodyLinks(blocks, allow, candidates);
     blocks = linkPass.blocks;
     fixes.push(...linkPass.fixes);
   }
 
+  // Mechanical public-integrity repairs on every deterministic pass (QA markers,
+  // corrupt sentence breaks, irrelevant links, TOC from final headings). The publish
+  // gate re-inspects the stored draft, so nothing here can bypass final validation.
+  const assembled: WriterDraftPayload = {
+    ...draft,
+    seo_title,
+    meta_title,
+    meta_description,
+    excerpt,
+    blocks: normalizeDraftBlocks(blocks),
+  };
+  const integrity = repairPublicIntegrity(assembled, {
+    articleTitle: toPublicTitle(seo_title || draft.seo_title || ''),
+    scope: opts?.linkScope || null,
+  });
+  fixes.push(...integrity.fixes);
+
   return {
-    draft: {
-      ...draft,
-      seo_title,
-      meta_title,
-      meta_description,
-      excerpt,
-      blocks: normalizeDraftBlocks(blocks),
-    },
+    draft: integrity.draft,
     fixes,
   };
 }

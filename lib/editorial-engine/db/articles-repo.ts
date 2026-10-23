@@ -1,4 +1,5 @@
 import type { ResultSetHeader, RowDataPacket } from '../../db.js';
+import { linkFloorForResearch, type LinkResearchLike } from '../writer/v2/link-relevance.js';
 import { pool } from '../../db.js';
 import { getSettings } from './settings-repo.js';
 import type { ResearchPack } from '../writer/research-engine.js';
@@ -236,10 +237,15 @@ export async function insertDraftArticle(input: {
 }): Promise<number> {
   if (!pool) throw new Error('Database unavailable');
   const settings = await getSettings();
-  const validation = validateWriterDraft(input.draft, {
-    min: settings.article_length_min,
-    max: settings.article_length_max,
-  });
+  const validation = validateWriterDraft(
+    input.draft,
+    {
+      min: settings.article_length_min,
+      max: settings.article_length_max,
+    },
+    null,
+    { min_internal_links: linkFloorForResearch(input.research as LinkResearchLike | null) }
+  );
   if (!validation.ok) {
     throw new Error(
       `Draft validation failed — refusing to save invalid draft: ${validation.errors.join('; ')}`
@@ -532,7 +538,7 @@ export async function setArticleUnpublished(id: number): Promise<void> {
 export async function updatePublishedArticleContent(input: {
   id: number;
   slug?: string;
-  draft: WriterDraftPayload & Record<string, unknown>;
+  draft: WriterDraftPayload;
   word_count: number;
   reading_time_minutes: number;
 }): Promise<boolean> {

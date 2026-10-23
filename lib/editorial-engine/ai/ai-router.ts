@@ -8,7 +8,9 @@ import {
   insertAiUsageLog,
   listAiProviderSettings,
   markProviderUsed,
+  recordAutoModelSwitch,
 } from '../db/ai-settings-repo.js';
+import { buildModelChain, classifyModelError, statusFromError } from './model-catalog.js';
 import { estimateCostUsd } from './provider-config.js';
 import { selectProviderChain } from './provider-selector.js';
 import { mergeChunkTexts, planRequest } from './prompt-budgeter.js';
@@ -69,7 +71,7 @@ export class AiRouter {
             priority: 10,
             api_key: groqKey,
             api_key_masked: null,
-            default_model: input.model || 'llama-3.3-70b-versatile',
+            default_model: input.model || null,
             temperature: input.temperature,
             top_p: input.topP ?? 0.9,
             max_output_tokens: input.maxTokens,
@@ -111,131 +113,172 @@ export class AiRouter {
         continue;
       }
 
-      const model =
-        input.model ||
-        providerCfg.default_model ||
-        adapter.listModels()[0] ||
-        'unknown';
+      // Ordered model chain for THIS provider. A requested model is only used when it
+      // belongs to this provider (a Groq model id must never be sent to OpenRouter).
+      const modelChain = await buildModelChain({
+        provider: providerCfg.provider_name,
+        apiKey,
+        defaultModel: providerCfg.default_model,
+        preferredModel: input.model,
+        meta: providerCfg.meta,
+      });
+      if (!modelChain.models.length) {
+        errors.push(`${providerCfg.provider_name}: no available model (configured: ${modelChain.unavailable.join(', ') || 'none'})`);
+        continue;
+      }
+      const firstChoice = modelChain.unavailable[0] || modelChain.models[0]!;
+      let lastFailure = modelChain.unavailable.length
+        ? `${modelChain.unavailable.join(', ')} not offered by ${providerCfg.provider_name}`
+        : '';
 
-      const jsonMode = Boolean(input.jsonMode) && adapter.supportsJson();
-      const budget = planRequest(
-        {
-          model,
-          system: input.system,
-          user: input.user,
-          temperature: input.temperature ?? providerCfg.temperature,
-          maxTokens: Math.min(input.maxTokens, providerCfg.max_output_tokens),
-          topP: input.topP ?? providerCfg.top_p,
-          jsonMode,
-        },
-        {
-          maxInputTokens: providerCfg.max_input_tokens,
-          maxOutputTokens: providerCfg.max_output_tokens,
-          contextWindow: providerCfg.context_window,
-          tpmLimit: providerCfg.tpm_limit,
-        }
-      );
-
-      try {
-        const started = Date.now();
-        const texts: string[] = [];
-        let tokensIn = 0;
-        let tokensOut = 0;
-        let finishReason: string | null = null;
-        let last: AiGenerateResult | null = null;
-
-        for (const chunk of budget.chunks) {
-          const generatePromise = adapter.generate(chunk, apiKey);
-          last =
-            timeoutMs > 0
-              ? await Promise.race([
-                  generatePromise,
-                  new Promise<never>((_, reject) => {
-                    setTimeout(
-                      () =>
-                        reject(
-                          new Error(
-                            `${providerCfg.provider_name} timed out after ${timeoutMs}ms`
-                          )
-                        ),
-                      timeoutMs
-                    );
-                  }),
-                ])
-              : await generatePromise;
-          texts.push(last.text);
-          tokensIn += last.tokensIn || 0;
-          tokensOut += last.tokensOut || 0;
-          finishReason = last.finishReason || finishReason;
-        }
-
-        const text = mergeChunkTexts(texts);
-        const latencyMs = Date.now() - started;
-        const cost = estimateCostUsd(providerCfg.provider_name, tokensIn, tokensOut);
-
-        await insertAiUsageLog({
-          provider_name: providerCfg.provider_name,
-          model,
-          stage: input.stage || 'complete',
-          success: true,
-          latency_ms: latencyMs,
-          tokens_in: tokensIn || undefined,
-          tokens_out: tokensOut || undefined,
-          estimated_cost_usd: cost,
-          retry_count: retries,
-          article_id: input.articleId ?? null,
-          meta_json: {
-            trimmed: budget.trimmed,
-            chunks: budget.chunks.length,
-            article_id: input.articleId ?? null,
-            fallback: retries > 0,
+      let providerAuthFailed = false;
+      for (const model of modelChain.models) {
+        const jsonMode = Boolean(input.jsonMode) && adapter.supportsJson();
+        const budget = planRequest(
+          {
+            model,
+            system: input.system,
+            user: input.user,
+            temperature: input.temperature ?? providerCfg.temperature,
+            maxTokens: Math.min(input.maxTokens, providerCfg.max_output_tokens),
+            topP: input.topP ?? providerCfg.top_p,
+            jsonMode,
           },
-        });
-        await markProviderUsed(providerCfg.provider_name, {
-          latencyMs,
-          status: 'healthy',
-          error: null,
-        });
+          {
+            maxInputTokens: providerCfg.max_input_tokens,
+            maxOutputTokens: providerCfg.max_output_tokens,
+            contextWindow: providerCfg.context_window,
+            tpmLimit: providerCfg.tpm_limit,
+          }
+        );
 
-        return {
-          text,
-          tokensIn: tokensIn || last?.tokensIn,
-          tokensOut: tokensOut || last?.tokensOut,
-          latencyMs,
-          finishReason,
-          provider: providerCfg.provider_name,
-          model,
-          retries,
-        };
-      } catch (err) {
-        retries += 1;
-        const message = (err as Error).message || 'provider failed';
-        errors.push(`${providerCfg.provider_name}: ${message}`);
-        const quota =
-          /quota|billing|rate limit|429|insufficient_quota/i.test(message);
-        await insertAiUsageLog({
-          provider_name: providerCfg.provider_name,
-          model,
-          stage: input.stage || 'complete',
-          success: false,
-          error_message: message.slice(0, 500),
-          retry_count: retries,
-          article_id: input.articleId ?? null,
-          meta_json: {
+        try {
+          const started = Date.now();
+          const texts: string[] = [];
+          let tokensIn = 0;
+          let tokensOut = 0;
+          let finishReason: string | null = null;
+          let last: AiGenerateResult | null = null;
+
+          for (const chunk of budget.chunks) {
+            const generatePromise = adapter.generate(chunk, apiKey);
+            last =
+              timeoutMs > 0
+                ? await Promise.race([
+                    generatePromise,
+                    new Promise<never>((_, reject) => {
+                      setTimeout(
+                        () =>
+                          reject(
+                            new Error(
+                              `${providerCfg.provider_name} timed out after ${timeoutMs}ms`
+                            )
+                          ),
+                        timeoutMs
+                      );
+                    }),
+                  ])
+                : await generatePromise;
+            texts.push(last.text);
+            tokensIn += last.tokensIn || 0;
+            tokensOut += last.tokensOut || 0;
+            finishReason = last.finishReason || finishReason;
+          }
+
+          const text = mergeChunkTexts(texts);
+          if (!text.trim()) throw new Error(`${model} returned an empty response`);
+          const latencyMs = Date.now() - started;
+          const cost = estimateCostUsd(providerCfg.provider_name, tokensIn, tokensOut);
+
+          await insertAiUsageLog({
+            provider_name: providerCfg.provider_name,
+            model,
+            stage: input.stage || 'complete',
+            success: true,
+            latency_ms: latencyMs,
+            tokens_in: tokensIn || undefined,
+            tokens_out: tokensOut || undefined,
+            estimated_cost_usd: cost,
+            retry_count: retries,
             article_id: input.articleId ?? null,
-            fallback: true,
-          },
-        });
+            meta_json: {
+              trimmed: budget.trimmed,
+              chunks: budget.chunks.length,
+              article_id: input.articleId ?? null,
+              fallback: retries > 0,
+              model_fallback: model !== firstChoice ? { from: firstChoice, reason: lastFailure.slice(0, 200) } : null,
+            },
+          });
+          await markProviderUsed(providerCfg.provider_name, {
+            latencyMs,
+            status: 'healthy',
+            error: null,
+          });
+          // Remember an automatic switch so the next call starts with the working model.
+          if (model !== firstChoice && providerCfg.meta?.auto_model?.model !== model) {
+            console.warn(
+              `[ai-router] ${providerCfg.provider_name}: auto-switched model ${firstChoice} → ${model} (${lastFailure.slice(0, 160)})`
+            );
+            await recordAutoModelSwitch(providerCfg.provider_name, {
+              model,
+              from: firstChoice,
+              reason: lastFailure || 'previous model failed',
+            }).catch(() => undefined);
+          }
+
+          return {
+            text,
+            tokensIn: tokensIn || last?.tokensIn,
+            tokensOut: tokensOut || last?.tokensOut,
+            latencyMs,
+            finishReason,
+            provider: providerCfg.provider_name,
+            model,
+            retries,
+          };
+        } catch (err) {
+          retries += 1;
+          const message = (err as Error).message || 'provider failed';
+          const kind = classifyModelError(message, statusFromError(err));
+          lastFailure = `${model}: ${kind}: ${message}`;
+          errors.push(`${providerCfg.provider_name}/${model} [${kind}]: ${message.slice(0, 200)}`);
+          await insertAiUsageLog({
+            provider_name: providerCfg.provider_name,
+            model,
+            stage: input.stage || 'complete',
+            success: false,
+            error_message: message.slice(0, 500),
+            retry_count: retries,
+            article_id: input.articleId ?? null,
+            meta_json: {
+              article_id: input.articleId ?? null,
+              fallback: true,
+              error_kind: kind,
+            },
+          });
+          if (kind === 'auth') {
+            providerAuthFailed = true;
+            await markProviderUsed(providerCfg.provider_name, {
+              status: 'down',
+              error: message.slice(0, 500),
+            });
+            break; // key problem — other models of this provider will fail too
+          }
+          // Model-level problem (retired model, per-model quota, credits, overload): try next model.
+        }
+      }
+      if (!providerAuthFailed) {
+        const quota = /rate_limited|credits/.test(lastFailure);
         await markProviderUsed(providerCfg.provider_name, {
           status: quota ? 'degraded' : 'down',
-          error: message.slice(0, 500),
+          error: lastFailure.slice(0, 500),
         });
-        // continue failover
       }
+      // continue failover to the next provider
     }
 
     throw new Error(
-      `All AI providers failed (${errors.length} attempts). ${errors.slice(0, 3).join(' | ')}`
+      `All AI providers failed (${errors.length} attempts). ${errors.slice(0, 4).join(' | ')}`
     );
   }
 }

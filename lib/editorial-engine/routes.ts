@@ -51,6 +51,9 @@ import {
   auditArticleClaimsAgainstRag,
   auditTextClaimsAgainstRag,
   getRagModel,
+  groundingArticlePolicy,
+  groundingRequiredForArticles,
+  resolveGeminiApiKey,
 } from './rag/index.js';
 import { trustedRagEvidence } from './research/rag-trust.js';
 import { getLatestWriterGenerationDebug } from './db/generation-logs-repo.js';
@@ -160,20 +163,24 @@ export function createEditorialRouter(): Router {
 
   /** RAG Status & Google Search Grounding capabilities */
   router.get('/rag/status', async (_req, res) => {
-    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY);
+    // Placeholder keys ("your_gemini_api_key") count as missing.
+    const hasGeminiKey = Boolean(resolveGeminiApiKey());
+    const policy = groundingArticlePolicy();
     return res.json({
       ok: true,
-      engine: 'CityCost RAG Factual Grounding Engine v2.1',
+      engine: 'CityCost RAG Factual Grounding Engine v2.2',
       model: getRagModel(),
-      // 'configured' means a key is set; a live call can still fail — run a retrieval to confirm.
+      // 'configured' means a real key is set; a live call can still fail — run a retrieval to confirm.
       search_grounding: hasGeminiKey ? 'configured' : 'disabled',
       google_search_enabled: hasGeminiKey,
+      article_use_permitted: policy.permitted,
+      article_use_reason: policy.reason,
+      grounding_required_for_articles: groundingRequiredForArticles(),
       features: [
-        'Google Search Grounding for live rental prices and transit fares',
-        'Per-fact citations mapped from Gemini grounding supports',
-        'Unsourced statements are dropped; no fallback figures are synthesized',
-        'Claim-by-claim quantitative fact checker (city-aware, footnotes must match evidence)',
-        'Disputed claims are flagged in the quality report',
+        'Interactive lookup: grounded answer shown unmodified with Google Search Suggestions, not stored',
+        'Article pipeline use only with written permission from Google (GROUNDING_ARTICLE_USE)',
+        'Per-fact citations mapped from Gemini grounding supports; unsourced statements dropped',
+        'No fallback figures or source URLs are ever synthesized',
       ],
       timestamp: new Date().toISOString(),
     });
@@ -193,14 +200,22 @@ export function createEditorialRouter(): Router {
       const category =
         typeof req.body?.category === 'string' ? req.body.category.trim() : undefined;
 
+      // Interactive lookup by the signed-in editor: the grounded answer is shown to the
+      // requester unmodified with Search Suggestions and is not persisted (Gemini API terms).
       const result = await retrieveGroundedCityCostData({
         targetCity,
         comparisonCity,
         topicTitle,
         category,
+        includeDisplay: true,
       });
-
-      return res.json({ ok: true, data: result });
+      const policy = groundingArticlePolicy();
+      // Parsed claim lists are an analysis of Grounded Results — only with written permission.
+      const data = policy.permitted
+        ? result
+        : { ...result, facts: [], factLines: [], facts_withheld: result.facts.length };
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ ok: true, data, policy: { article_use_permitted: policy.permitted, reason: policy.reason } });
     } catch (err) {
       return res.status(500).json({ error: (err as Error).message || 'Failed to retrieve grounded data' });
     }
@@ -233,10 +248,17 @@ export function createEditorialRouter(): Router {
         if (city) {
           const comparisonCity =
             typeof req.body?.comparisonCity === 'string' ? req.body.comparisonCity.trim() || undefined : undefined;
-          const retrieved = await retrieveGroundedCityCostData({ targetCity: city, comparisonCity });
-          groundedFacts = retrieved.facts;
-          sources = retrieved.sources;
-          retrieval = { status: retrieved.status, error: retrieved.error };
+          if (groundingArticlePolicy().permitted) {
+            const retrieved = await retrieveGroundedCityCostData({ targetCity: city, comparisonCity });
+            groundedFacts = retrieved.facts;
+            sources = retrieved.sources;
+            retrieval = { status: retrieved.status, error: retrieved.error };
+          } else {
+            // Auditing text against Grounded Results is analysis of those results — not permitted.
+            groundedFacts = [];
+            sources = [];
+            retrieval = { status: 'blocked', error: groundingArticlePolicy().reason };
+          }
         } else {
           groundedFacts = [];
           sources = [];
@@ -436,17 +458,22 @@ export function createEditorialRouter(): Router {
       } = await import('./db/ai-settings-repo.js');
       const { statusColor } = await import('./ai/provider-health.js');
       const { getProviderDefaults } = await import('./ai/provider-config.js');
+      const { getLiveModels } = await import('./ai/model-catalog.js');
       const providers = await listAiProviderSettings();
       const enriched = await Promise.all(
         providers.map(async (p) => {
           const today = await getProviderTodayStats(p.provider_name);
           const def = getProviderDefaults(p.provider_name);
-          const { api_key: _secret, ...safe } = p;
+          const { api_key: secret, ...safe } = p;
+          // Live list from the provider (cached 30 min) so the admin can only pick models that exist.
+          const live = secret || p.provider_name === 'openrouter' ? await getLiveModels(p.provider_name, secret) : null;
           return {
             ...safe,
             label: def.label,
             env_key: def.env_key || null,
-            models: p.models || def.models,
+            models: live?.length ? live : p.models || def.models,
+            live_models: Boolean(live?.length),
+            default_model_available: live ? Boolean(p.default_model && live.includes(p.default_model)) : null,
             supports_json: def.supports_json,
             supports_streaming: def.supports_streaming,
             supports_long_context: def.supports_long_context,

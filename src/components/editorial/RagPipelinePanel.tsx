@@ -262,12 +262,52 @@ export default function RagPipelinePanel() {
 
           {retrievalError && <Callout tone="rose">{retrievalError}</Callout>}
 
+          {ragStatus && !ragStatus.article_use_permitted && (
+            <Callout tone="sky">
+              Article use of Google grounding is off. Lookups here are shown only to you, unmodified, with
+              Google Search Suggestions, and are not stored. {ragStatus.article_use_reason}
+            </Callout>
+          )}
+
           {retrievalResult && retrievalResult.status !== 'live' && (
             <Callout tone="amber">
               No live grounded data ({retrievalResult.status}
-              {retrievalResult.error ? `: ${retrievalResult.error}` : ''}). Nothing is substituted — articles
-              generated now carry no external figures.
+              {retrievalResult.error_category ? ` · ${retrievalResult.error_category}` : ''}
+              {retrievalResult.error ? `: ${retrievalResult.error}` : ''}). Nothing is substituted.
             </Callout>
+          )}
+
+          {retrievalResult?.display && (
+            <div className="space-y-3 rounded-2xl border border-slate-200/80 bg-white p-4 dark:border-white/10 dark:bg-slate-900/60">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  Grounded answer (Google Search) — shown unmodified, not stored
+                </h3>
+                {retrievalResult.trace && (
+                  <span className="font-mono text-[11px] text-slate-400">
+                    {retrievalResult.trace.request_id} · {retrievalResult.trace.model} ·{' '}
+                    {retrievalResult.trace.latency_ms}ms · {retrievalResult.trace.grounding_chunks} sources
+                  </span>
+                )}
+              </div>
+              <pre className="max-h-[360px] overflow-y-auto whitespace-pre-wrap font-sans text-xs leading-relaxed text-slate-800 dark:text-slate-200">
+                {retrievalResult.display.text}
+              </pre>
+              {retrievalResult.display.search_entry_point_html && (
+                <iframe
+                  title="Google Search Suggestions"
+                  sandbox="allow-popups allow-popups-to-escape-sandbox"
+                  srcDoc={retrievalResult.display.search_entry_point_html}
+                  className="h-24 w-full rounded-lg border-0"
+                />
+              )}
+              {retrievalResult.facts_withheld ? (
+                <p className="text-[11px] text-slate-500">
+                  {retrievalResult.facts_withheld} parsed claim(s) withheld — claim extraction and reuse require
+                  written permission from Google.
+                </p>
+              ) : null}
+            </div>
           )}
 
           {retrievalResult && (

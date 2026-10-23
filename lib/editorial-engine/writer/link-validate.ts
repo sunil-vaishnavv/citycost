@@ -6,6 +6,7 @@ import type { ResearchPack } from './research-engine.js';
 import type { WriterDraftPayload } from './draft-validate.js';
 import { draftBodyText } from '../reviewer/text-utils.js';
 import { normalizeGuideFamily } from './guide-contracts.js';
+import { filterRelevantHrefs } from './v2/link-relevance.js';
 
 export interface LinkValidationResult {
   ok: boolean;
@@ -193,5 +194,8 @@ export function curatedLinksForWriter(research: ResearchPack, limit = 8): string
       ...(research.internal_link_candidates || []).map((l) => l.href).filter(Boolean),
     ];
   }
-  return [...new Set(ordered)].slice(0, limit);
+  const unique = [...new Set(ordered)];
+  // Only links to real routes that match the article's geography (legacy packs without geo_scope unchanged).
+  const relevant = research.geo_scope ? filterRelevantHrefs(unique, research.geo_scope) : unique;
+  return relevant.slice(0, limit);
 }
