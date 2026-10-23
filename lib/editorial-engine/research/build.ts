@@ -281,10 +281,15 @@ export function assembleResearchPack(
   const supporting_facts = [...ctx.known_facts];
   const known_data_gaps = [...ctx.data_gaps];
 
-  if (groundedRag?.facts?.length) {
+  // Only live, source-backed facts are added; nothing is synthesized when grounding is off.
+  if (groundedRag?.status === 'live' && groundedRag.facts.length) {
     for (const gf of groundedRag.facts) {
       supporting_facts.push(`${gf.citationRef} ${gf.statement}`);
     }
+  } else if (groundedRag) {
+    known_data_gaps.push(
+      `No live web-sourced figures (${groundedRag.error || groundedRag.status}) — do not cite external statistics or [^n] footnotes`
+    );
   }
 
   if (!supporting_facts.length) {
@@ -368,9 +373,11 @@ export function assembleResearchPack(
       checked_at: new Date().toISOString(),
       schema_version: RESEARCH_PACK_VERSION,
     },
-    grounding_sources: groundedRag?.sources,
-    grounded_facts: groundedRag?.facts,
-    rag_accuracy_score: groundedRag?.facts?.length ? 96 : undefined,
+    grounding_sources: groundedRag?.status === 'live' ? groundedRag.sources : undefined,
+    grounded_facts: groundedRag?.status === 'live' ? groundedRag.facts : undefined,
+    rag_status: groundedRag?.status,
+    rag_error: groundedRag && groundedRag.status !== 'live' ? groundedRag.error : undefined,
+    rag_model: groundedRag?.model,
   };
 
   pack.validation = validateResearchPack(pack);
@@ -392,12 +399,15 @@ export function buildResearchPack(
 }
 
 /**
- * Asynchronously build a Research Pack with live real-time Google Search Grounding.
+ * Build + validate a Research Pack with live Google Search Grounding.
+ * Grounding failures degrade to an ungrounded pack (with a data-gap note);
+ * an invalid pack throws, same contract as buildResearchPack.
  */
 export async function buildGroundedResearchPackAsync(
   topic: EditorialTopic,
   ctx: StructuredContextPack,
-  apiKey?: string
+  apiKey?: string,
+  signal?: AbortSignal
 ): Promise<ResearchPack> {
   const targetCity = ctx.comparison
     ? String(ctx.comparison.cityA)
@@ -414,12 +424,17 @@ export async function buildGroundedResearchPackAsync(
       topicTitle: topic.title,
       category: topic.content_type,
       apiKey,
+      signal,
     });
   } catch (err) {
+    if (signal?.aborted) throw err;
     console.warn('⚠️ RAG live retrieval skipped in research pack build:', err);
   }
 
   const pack = assembleResearchPack(topic, ctx, ragResult);
+  if (!pack.validation.ok) {
+    throw new ResearchPackValidationError(pack.validation.missing_fields, pack.validation.warnings);
+  }
   return pack;
 }
 

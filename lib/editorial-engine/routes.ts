@@ -50,7 +50,9 @@ import {
   retrieveGroundedCityCostData,
   auditArticleClaimsAgainstRag,
   auditTextClaimsAgainstRag,
+  getRagModel,
 } from './rag/index.js';
+import { trustedRagEvidence } from './research/rag-trust.js';
 import { getLatestWriterGenerationDebug } from './db/generation-logs-repo.js';
 import { estimateGroqCostUsd } from './ai-cost.js';
 import {
@@ -97,6 +99,7 @@ import {
   retryRevisionJob,
 } from './jobs/revision-batch-worker.js';
 import { subscribeDraftJob } from './jobs/draft-job-events.js';
+import { compactJobProgress, parseJobView, type JobPayloadView } from './jobs/job-serialize.js';
 import { DRAFT_GENERATE_JOB_TYPE } from './jobs/draft-job-types.js';
 import { REVISION_BATCH_JOB_TYPE } from './jobs/revision-batch-types.js';
 import {
@@ -160,16 +163,17 @@ export function createEditorialRouter(): Router {
     const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY);
     return res.json({
       ok: true,
-      engine: 'CityCost RAG Factual Grounding Engine v2.0',
-      model: 'gemini-3.8-flash',
-      search_grounding: hasGeminiKey ? 'active' : 'benchmark_fallback',
+      engine: 'CityCost RAG Factual Grounding Engine v2.1',
+      model: getRagModel(),
+      // 'configured' means a key is set; a live call can still fail — run a retrieval to confirm.
+      search_grounding: hasGeminiKey ? 'configured' : 'disabled',
       google_search_enabled: hasGeminiKey,
       features: [
-        'Real-time Google Search Grounding for live rental prices and transit fares',
-        'Automated claim-by-claim quantitative fact checker',
-        'Inline citation references ([^1], [^2]) with domain and timestamp mapping',
-        'Deterministic municipal benchmark fallback (Austin, Seattle, Tokyo, Lisbon, NYC)',
-        'Automated quality audit gate blocking publishing when ungrounded claims exist',
+        'Google Search Grounding for live rental prices and transit fares',
+        'Per-fact citations mapped from Gemini grounding supports',
+        'Unsourced statements are dropped; no fallback figures are synthesized',
+        'Claim-by-claim quantitative fact checker (city-aware, footnotes must match evidence)',
+        'Disputed claims are flagged in the quality report',
       ],
       timestamp: new Date().toISOString(),
     });
@@ -217,20 +221,26 @@ export function createEditorialRouter(): Router {
         if (!blocks && Array.isArray(draft?.blocks)) {
           blocks = draft.blocks;
         }
-        const research = article.research_pack_json as Record<string, unknown> | null;
-        if (!groundedFacts && Array.isArray(research?.grounded_facts)) {
-          groundedFacts = research.grounded_facts;
-        }
-        if (!sources && Array.isArray(research?.grounding_sources)) {
-          sources = research.grounding_sources;
-        }
+        const trusted = trustedRagEvidence(article.research_pack_json);
+        if (!groundedFacts && trusted.facts.length) groundedFacts = trusted.facts;
+        if (!sources && trusted.sources.length) sources = trusted.sources;
       }
 
+      // No evidence supplied/stored: retrieve live only for an explicit city. Never default to another city.
+      let retrieval: { status: string; error?: string } | undefined;
       if (!Array.isArray(groundedFacts) || groundedFacts.length === 0) {
-        const city = typeof req.body?.targetCity === 'string' ? req.body.targetCity : 'Austin';
-        const retrieved = await retrieveGroundedCityCostData({ targetCity: city });
-        groundedFacts = retrieved.facts;
-        sources = retrieved.sources;
+        const city = typeof req.body?.targetCity === 'string' ? req.body.targetCity.trim() : '';
+        if (city) {
+          const comparisonCity =
+            typeof req.body?.comparisonCity === 'string' ? req.body.comparisonCity.trim() || undefined : undefined;
+          const retrieved = await retrieveGroundedCityCostData({ targetCity: city, comparisonCity });
+          groundedFacts = retrieved.facts;
+          sources = retrieved.sources;
+          retrieval = { status: retrieved.status, error: retrieved.error };
+        } else {
+          groundedFacts = [];
+          sources = [];
+        }
       }
 
       const report = Array.isArray(blocks)
@@ -241,7 +251,7 @@ export function createEditorialRouter(): Router {
             sources || []
           );
 
-      return res.json({ ok: true, report });
+      return res.json({ ok: true, report, retrieval });
     } catch (err) {
       return res.status(500).json({ error: (err as Error).message || 'Failed to audit claims' });
     }
@@ -921,14 +931,23 @@ export function createEditorialRouter(): Router {
     }
   });
 
-  function serializeJob(job: NonNullable<Awaited<ReturnType<typeof getJobById>>>) {
+  /**
+   * Browser payload for a job. `list`/`detail` strip retry caches (research pack,
+   * half-draft blocks) and the full Writer debug log — the UI never renders them,
+   * and shipping them on every poll/SSE frame bloated the admin tab. `?view=full`
+   * returns the raw result_json for diagnostics.
+   */
+  function serializeJob(
+    job: NonNullable<Awaited<ReturnType<typeof getJobById>>>,
+    view: JobPayloadView = 'detail'
+  ) {
     const progress = (job.result_json || {}) as Record<string, unknown>;
     return {
       id: job.id,
       job_type: job.job_type,
       status: job.status,
       payload: job.payload_json,
-      progress,
+      progress: compactJobProgress(progress, view),
       error_message: job.error_message,
       attempts: job.attempts,
       created_at: job.created_at,
@@ -958,7 +977,9 @@ export function createEditorialRouter(): Router {
     try {
       const activeOnly = String(req.query.active || '') === '1' || String(req.query.active) === 'true';
       const type = String(req.query.type || DRAFT_GENERATE_JOB_TYPE);
-      const limit = Number(req.query.limit) || 20;
+      const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+      const view = parseJobView(req.query.view, 'list');
+      const toView = (j: Parameters<typeof serializeJob>[0]) => serializeJob(j, view);
       if (type === 'all' || type === 'draft_generate,revision_batch') {
         const [drafts, revisions] = await Promise.all([
           listDraftJobs({ activeOnly, limit }),
@@ -968,17 +989,17 @@ export function createEditorialRouter(): Router {
           ? [...drafts, ...revisions.filter((j) => j.status === 'queued' || j.status === 'running')]
           : [...drafts, ...revisions];
         filtered.sort((a, b) => b.id - a.id);
-        return res.json({ jobs: filtered.slice(0, limit).map(serializeJob) });
+        return res.json({ jobs: filtered.slice(0, limit).map(toView) });
       }
       if (type === REVISION_BATCH_JOB_TYPE) {
         const jobs = await listRecentJobs({ jobType: REVISION_BATCH_JOB_TYPE, limit });
         const filtered = activeOnly
           ? jobs.filter((j) => j.status === 'queued' || j.status === 'running')
           : jobs;
-        return res.json({ jobs: filtered.map(serializeJob) });
+        return res.json({ jobs: filtered.map(toView) });
       }
       const jobs = await listDraftJobs({ activeOnly, limit });
-      return res.json({ jobs: jobs.map(serializeJob) });
+      return res.json({ jobs: jobs.map(toView) });
     } catch (err) {
       return res.status(500).json({ error: (err as Error).message });
     }
@@ -990,7 +1011,7 @@ export function createEditorialRouter(): Router {
       if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid job id' });
       const job = await getJobById(id);
       if (!job) return res.status(404).json({ error: 'Job not found' });
-      return res.json({ job: serializeJob(job) });
+      return res.json({ job: serializeJob(job, parseJobView(req.query.view, 'detail')) });
     } catch (err) {
       return res.status(500).json({ error: (err as Error).message });
     }
@@ -1011,62 +1032,68 @@ export function createEditorialRouter(): Router {
         (res as Response & { flushHeaders: () => void }).flushHeaders();
       }
 
+      let closed = false;
       const send = (event: string, data: unknown) => {
+        if (closed) return;
         res.write(`event: ${event}\n`);
         res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
 
-      send('snapshot', serializeJob(job));
-
       if (job.status === 'completed' || job.status === 'failed') {
-        send('done', serializeJob(job));
+        // Terminal job: a single 'done' frame is the final snapshot.
+        send('done', serializeJob(job, 'detail'));
         res.end();
         return;
       }
 
+      send('snapshot', serializeJob(job, 'detail'));
+
       const unsub = subscribeDraftJob(id, (payload) => {
-        send('progress', {
+        const frame = {
           id: payload.jobId,
+          job_type: job.job_type,
           status: payload.status,
-          progress: payload.progress,
+          progress: compactJobProgress(
+            payload.progress as unknown as Record<string, unknown>,
+            'detail'
+          ),
           error_message: payload.error_message ?? null,
           article_id: payload.progress.article_id ?? null,
           topic_id: payload.progress.topic_id,
           topic_title: payload.progress.topic_title ?? null,
-        });
+        };
         if (payload.status === 'completed' || payload.status === 'failed') {
-          send('done', {
-            id: payload.jobId,
-            status: payload.status,
-            progress: payload.progress,
-            error_message: payload.error_message ?? null,
-            article_id: payload.progress.article_id ?? null,
-          });
+          send('done', frame);
           cleanup();
           res.end();
+          return;
         }
+        send('progress', frame);
       });
 
       const heartbeat = setInterval(() => {
-        res.write(`: ping\n\n`);
+        if (!closed) res.write(`: ping\n\n`);
       }, 15000);
 
       const poll = setInterval(async () => {
         try {
+          if (closed) return;
           const latest = await getJobById(id);
-          if (!latest) return;
-          send('snapshot', serializeJob(latest));
+          if (!latest || closed) return;
           if (latest.status === 'completed' || latest.status === 'failed') {
-            send('done', serializeJob(latest));
+            send('done', serializeJob(latest, 'detail'));
             cleanup();
             res.end();
+            return;
           }
+          send('snapshot', serializeJob(latest, 'detail'));
         } catch {
           /* ignore poll errors */
         }
       }, 4000);
 
       const cleanup = () => {
+        closed = true;
         unsub();
         clearInterval(heartbeat);
         clearInterval(poll);

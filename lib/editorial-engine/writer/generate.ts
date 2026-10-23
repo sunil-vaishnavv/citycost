@@ -20,6 +20,7 @@ import { getEditorialRuntime } from '../init.js';
 import { cleanEditorialSlug, cleanEditorialTitle } from '../utils/clean-title.js';
 import { buildStructuredContext } from './context-pack.js';
 import { buildResearchPack, buildGroundedResearchPackAsync } from './research-engine.js';
+import { stripUntrustedGrounding } from '../research/rag-trust.js';
 import {
   countDraftWords,
   readingTimeMinutes,
@@ -177,7 +178,7 @@ export async function generateArticleDraft(
     const context = buildStructuredContext(topic);
     let research: ResearchPack;
     if (options.reuseResearch && options.cachedResearch && typeof options.cachedResearch === 'object') {
-      research = options.cachedResearch as ResearchPack;
+      research = stripUntrustedGrounding(options.cachedResearch as ResearchPack);
       await emit({
         type: 'log',
         message: 'Reusing cached research pack from prior job',
@@ -189,7 +190,7 @@ export async function generateArticleDraft(
         message: 'Fetching real-time Google Search grounding facts and authoritative benchmarks…',
         checkpoint: 'research',
       });
-      research = await buildGroundedResearchPackAsync(topic, context);
+      research = await buildGroundedResearchPackAsync(topic, context, undefined, options.signal);
     }
     await emit({
       type: 'checkpoint',
@@ -197,7 +198,9 @@ export async function generateArticleDraft(
       stage: 'preparing_research',
       message: research.grounding_sources?.length
         ? `Research grounded with ${research.grounding_sources.length} live sources`
-        : 'Research loaded',
+        : research.rag_status && research.rag_status !== 'live'
+          ? `Research loaded without live grounding (${research.rag_status})`
+          : 'Research loaded',
     });
 
     debug.groq_model = settings.writer_model;

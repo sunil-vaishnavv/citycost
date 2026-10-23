@@ -15,6 +15,7 @@ import {
 import { getTopicById } from '../db/topics-repo.js';
 import { generateArticleDraft, type GenerateArticleOptions } from '../writer/generate.js';
 import { emitDraftJobUpdate } from './draft-job-events.js';
+import { createJobMemoryTracker } from './job-memory.js';
 import {
   appendLog,
   applyStage,
@@ -45,12 +46,32 @@ async function persistAndEmit(
   emitDraftJobUpdate({ jobId, status, progress, error_message });
 }
 
-export async function enqueueDraftGenerate(input: {
+type EnqueueDraftInput = {
   topic_id: number;
   reuse_research?: boolean;
   retry_of_job_id?: number;
   source?: DraftJobPayload['source'];
-}): Promise<{ ok: boolean; jobId?: number; status?: string; message: string; error?: string }> {
+};
+type EnqueueDraftResult = { ok: boolean; jobId?: number; status?: string; message: string; error?: string };
+
+/**
+ * Per-topic single-flight. The active-job lookup + insert below is not atomic,
+ * so overlapping requests (double clicks, reconnect retries) could each insert
+ * a job. Concurrent callers for the same topic share one enqueue promise.
+ */
+const enqueueInFlight = new Map<number, Promise<EnqueueDraftResult>>();
+
+export function enqueueDraftGenerate(input: EnqueueDraftInput): Promise<EnqueueDraftResult> {
+  const pending = enqueueInFlight.get(input.topic_id);
+  if (pending) return pending;
+  const run = enqueueDraftGenerateOnce(input).finally(() => {
+    enqueueInFlight.delete(input.topic_id);
+  });
+  enqueueInFlight.set(input.topic_id, run);
+  return run;
+}
+
+async function enqueueDraftGenerateOnce(input: EnqueueDraftInput): Promise<EnqueueDraftResult> {
   const topic = await getTopicById(input.topic_id);
   if (!topic) {
     return { ok: false, message: 'Topic not found', error: 'topic_not_found' };
@@ -150,8 +171,14 @@ async function executeDraftJob(jobId: number): Promise<void> {
   const topicId = Number(job.payload_json?.topic_id || progress.topic_id);
   const reuseResearch = Boolean(job.payload_json?.reuse_research) || Boolean(progress.cache?.research_pack);
   const started = Date.now();
+  const memory = createJobMemoryTracker(`draft-job #${jobId}`);
 
   const controllers = new AbortController();
+
+  const persistAndEmitTracked = async (status: string, next: DraftJobProgress) => {
+    memory.stage(next.stage);
+    await persistAndEmit(jobId, status, next);
+  };
 
   const pushProgress = async (
     stage: DraftJobStage,
@@ -163,7 +190,7 @@ async function executeDraftJob(jobId: number): Promise<void> {
     }
     progress = applyStage(progress, stage, opts);
     if (opts?.checkpoint) progress = { ...progress, checkpoint: opts.checkpoint };
-    await persistAndEmit(jobId, 'running', progress);
+    await persistAndEmitTracked('running', progress);
   };
 
   const onProgress = async (event: DraftProgressEvent) => {
@@ -199,7 +226,7 @@ async function executeDraftJob(jobId: number): Promise<void> {
     if (event.type === 'checkpoint' && event.checkpoint === 'research' && event.detail) {
       /* research pack may be attached via metrics/debug from generate */
     }
-    await persistAndEmit(jobId, 'running', progress);
+    await persistAndEmitTracked('running', progress);
   };
 
   try {
@@ -247,6 +274,7 @@ async function executeDraftJob(jobId: number): Promise<void> {
           tokens_in: result.debug?.tokens_in,
           tokens_out: result.debug?.tokens_out,
           model: result.debug?.groq_model,
+          ...memory.finish('failed'),
         },
         debug: result.debug as unknown as Record<string, unknown>,
       };
@@ -278,6 +306,7 @@ async function executeDraftJob(jobId: number): Promise<void> {
         tokens_in: result.debug?.tokens_in,
         tokens_out: result.debug?.tokens_out,
         model: result.debug?.groq_model,
+        ...memory.finish('completed'),
       },
       cache: {
         ...progress.cache,
@@ -314,7 +343,12 @@ async function executeDraftJob(jobId: number): Promise<void> {
           ? { ...s, status: 'failed' as const, detail: message.slice(0, 240) }
           : s
       ),
-      metrics: { ...progress.metrics, total_ms: Date.now() - started, duration_ms: Date.now() - started },
+      metrics: {
+        ...progress.metrics,
+        total_ms: Date.now() - started,
+        duration_ms: Date.now() - started,
+        ...memory.finish(cancelled ? 'cancelled' : 'errored'),
+      },
     };
     await failJob(jobId, message, progress as unknown as Record<string, unknown>);
     emitDraftJobUpdate({ jobId, status: 'failed', progress, error_message: message });

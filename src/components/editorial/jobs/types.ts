@@ -90,6 +90,68 @@ export function saveTrackedJobIds(ids: number[]): void {
   }
 }
 
+/** Max log lines kept in client state per job (server already trims). */
+export const CLIENT_JOB_LOG_LIMIT = 100;
+
+/** Display-only debug fields; anything else (Writer debug, caches) is dropped. */
+function pickDebug(debug: unknown): Record<string, unknown> | undefined {
+  if (!debug || typeof debug !== 'object') return undefined;
+  const d = debug as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof d.before_score === 'number') out.before_score = d.before_score;
+  if (Array.isArray(d.validation_failures)) out.validation_failures = d.validation_failures.slice(0, 5);
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Cheap change signature for a job view. Used to skip state updates when a
+ * poll / SSE frame carries nothing new, so React does not re-render (and the
+ * provider does not loop) on identical data.
+ */
+export function jobViewSignature(j: DraftJobView): string {
+  const p = j.progress;
+  const lastLog = p.logs.length ? p.logs[p.logs.length - 1] : null;
+  return [
+    j.id,
+    j.job_type,
+    j.status,
+    p.stage,
+    p.stage_label,
+    p.progress_pct,
+    p.eta_seconds ?? '',
+    p.section_detail ?? '',
+    p.logs.length,
+    lastLog ? `${lastLog.t}|${lastLog.message.length}` : '',
+    p.stages.map((s) => `${s.id}:${s.status}:${s.detail?.length ?? 0}`).join(','),
+    j.article_id ?? '',
+    j.error_message ?? '',
+    p.failure_reason ?? '',
+    p.result_message ?? '',
+    p.passed === undefined ? '' : String(p.passed),
+    p.actions_taken?.length ?? 0,
+    String(j.updated_at ?? ''),
+  ].join('~');
+}
+
+export function sameJobView(a: DraftJobView | null | undefined, b: DraftJobView | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return jobViewSignature(a) === jobViewSignature(b);
+}
+
+export function sameJobList(a: DraftJobView[], b: DraftJobView[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (!sameJobView(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+export function isTerminalJobStatus(status: string | null | undefined): boolean {
+  return status === 'completed' || status === 'failed';
+}
+
 export function normalizeJobPayload(raw: Record<string, unknown>): DraftJobView {
   const progress = (raw.progress || {}) as DraftJobProgress;
   const metrics = (progress.metrics || {}) as Record<string, unknown>;
@@ -106,12 +168,12 @@ export function normalizeJobPayload(raw: Record<string, unknown>): DraftJobView 
       progress_pct: Number(progress.progress_pct || 0),
       eta_seconds: progress.eta_seconds ?? null,
       stages: Array.isArray(progress.stages) ? progress.stages : [],
-      logs: Array.isArray(progress.logs) ? progress.logs : [],
+      logs: Array.isArray(progress.logs) ? progress.logs.slice(-CLIENT_JOB_LOG_LIMIT) : [],
       metrics: progress.metrics,
       checkpoint: progress.checkpoint,
       cancel_requested: progress.cancel_requested,
       section_detail: progress.section_detail,
-      debug: progress.debug,
+      debug: pickDebug(progress.debug),
       passed:
         typeof progress.passed === 'boolean'
           ? progress.passed

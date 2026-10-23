@@ -26,6 +26,7 @@ import { computeArticleHealth } from '../observability/article-health.js';
 import type { ResearchPack } from '../writer/research-engine.js';
 import type { WriterDraftPayload } from '../writer/draft-validate.js';
 import { auditArticleClaimsAgainstRag } from '../rag/index.js';
+import { trustedRagEvidence } from '../research/rag-trust.js';
 
 export interface QualityReportScores {
   overall: number;
@@ -77,7 +78,10 @@ export interface QualityReport {
   article_health?: ArticleHealth;
   prompt_versions?: PromptVersionMeta;
   rag_factual_gate?: {
-    accuracy_score: number;
+    /** audited | no_evidence */
+    status?: string;
+    /** null when there was no grounded evidence to audit against. */
+    accuracy_score: number | null;
     total_claims: number;
     verified_count: number;
     disputed_count: number;
@@ -324,11 +328,15 @@ export function assembleQualityReport(input: {
   let ragGateReport: QualityReport['rag_factual_gate'] = undefined;
   if (input.draft?.blocks?.length) {
     const rawBlocks = input.draft.blocks as any;
-    const groundedFacts = (input.research?.grounded_facts || []) as any;
-    const sources = (input.research?.grounding_sources || []) as any;
+    // Only evidence from the source-verified retriever counts (legacy packs may hold synthesized data).
+    const { facts: groundedFacts, sources } = trustedRagEvidence(input.research) as {
+      facts: any;
+      sources: any;
+    };
 
     const ragAudit = auditArticleClaimsAgainstRag(rawBlocks, groundedFacts, sources);
     ragGateReport = {
+      status: ragAudit.status,
       accuracy_score: ragAudit.accuracyScore,
       total_claims: ragAudit.totalClaims,
       verified_count: ragAudit.verifiedCount,
@@ -359,7 +367,7 @@ export function assembleQualityReport(input: {
       human_writing: blendedHuman,
       helpful_content: blendedHelpful,
       seo,
-      factual_grounding: ragGateReport?.accuracy_score ?? 96,
+      factual_grounding: ragGateReport?.accuracy_score ?? undefined,
     },
     rag_factual_gate: ragGateReport,
     ai_review: ai,

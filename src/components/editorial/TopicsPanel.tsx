@@ -238,6 +238,7 @@ export default function TopicsPanel({
   const [researchLoading, setResearchLoading] = useState(false);
   const [generatingDraft, setGeneratingDraft] = useState(false);
   const [draftGenElapsedSec, setDraftGenElapsedSec] = useState(0);
+  const generateDraftLockRef = useRef(false);
   const jobsCtx = useEditorialJobsOptional();
   const [scheduleTopic, setScheduleTopic] = useState<Topic | null>(null);
   const [confirm, setConfirm] = useState<{ kind: ConfirmKind; count: number; ids?: number[] } | null>(
@@ -652,7 +653,9 @@ export default function TopicsPanel({
   };
 
   const generateDraft = async (topic: Topic) => {
-    if (!topicCanGenerateDraft(topic.status) || generatingDraft) return;
+    // Ref guard: state updates land after re-render, so rapid clicks would all pass a state check.
+    if (!topicCanGenerateDraft(topic.status) || generatingDraft || generateDraftLockRef.current) return;
+    generateDraftLockRef.current = true;
     setGeneratingDraft(true);
     setError('');
     setMessage('Queuing background draft job…');
@@ -684,6 +687,7 @@ export default function TopicsPanel({
       setError(err instanceof ApiError ? err.message : 'Failed to queue draft');
       setMessage('');
     } finally {
+      generateDraftLockRef.current = false;
       setGeneratingDraft(false);
     }
   };

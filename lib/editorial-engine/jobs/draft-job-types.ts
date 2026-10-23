@@ -52,6 +52,9 @@ export interface DraftJobMetrics {
   cost_usd?: number;
   retry_count?: number;
   duration_ms?: number;
+  /** Process heap diagnostics for the job (numbers only). */
+  peak_heap_mb?: number;
+  heap_delta_mb?: number;
 }
 
 export type DraftCheckpoint =

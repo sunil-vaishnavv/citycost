@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -11,8 +12,11 @@ import { Bot, CheckCircle2, X } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { GenerationDrawer } from './GenerationDrawer';
 import {
+  isTerminalJobStatus,
   loadTrackedJobIds,
   normalizeJobPayload,
+  sameJobList,
+  sameJobView,
   saveTrackedJobIds,
   type DraftJobView,
   type EnqueueGenerateResult,
@@ -200,6 +204,13 @@ export function JobCenterDropdown({
   );
 }
 
+/** Jobs kept in the AI Jobs menu. */
+const MAX_JOBS = 30;
+/** Poll cadence while any job is queued/running, and when idle. */
+const ACTIVE_POLL_MS = 8000;
+const IDLE_POLL_MS = 30000;
+const MAX_TOASTS = 4;
+
 export function JobsProvider({
   children,
   onOpenArticle,
@@ -212,11 +223,17 @@ export function JobsProvider({
   const [jobs, setJobs] = useState<DraftJobView[]>([]);
   const [drawerJobId, setDrawerJobId] = useState<number | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const seenCompleted = useMemo(() => new Set<number>(), []);
-  const [hydrated, setHydrated] = useState(false);
-  const terminalHandlers = useMemo(() => new Set<(job: DraftJobView) => void>(), []);
-  const seenTerminal = useMemo(() => new Set<number>(), []);
+  // Refs (not state) so callbacks stay stable and never retrigger effects.
+  const hydratedRef = useRef(false);
+  const seenTerminalRef = useRef(new Set<number>());
+  const terminalHandlersRef = useRef(new Set<(job: DraftJobView) => void>());
+  const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const lastRefreshAtRef = useRef(0);
+  const jobsRef = useRef<DraftJobView[]>([]);
+  const enqueueInFlightRef = useRef(new Map<string, Promise<EnqueueGenerateResult>>());
   const location = usePathname();
+
+  jobsRef.current = jobs;
 
   // Route-change cleanup: the drawer only tracks an in-memory job id. If the
   // route changes (e.g. Open Article navigates to /admin/articles/:id), make
@@ -231,66 +248,53 @@ export function JobsProvider({
   }, [location]);
 
   const subscribeJobTerminal = useCallback((handler: (job: DraftJobView) => void) => {
-    terminalHandlers.add(handler);
+    terminalHandlersRef.current.add(handler);
     return () => {
-      terminalHandlers.delete(handler);
+      terminalHandlersRef.current.delete(handler);
     };
-  }, [terminalHandlers]);
+  }, []);
 
+  /** Insert or replace one job. Returns the same array when nothing changed. */
   const mergeJob = useCallback((view: DraftJobView) => {
     setJobs((prev) => {
       const idx = prev.findIndex((j) => j.id === view.id);
-      const next = idx >= 0 ? [...prev] : [view, ...prev];
-      if (idx >= 0) next[idx] = view;
-      else next.sort((a, b) => b.id - a.id);
-      return next.slice(0, 30);
+      if (idx >= 0) {
+        if (sameJobView(prev[idx], view)) return prev;
+        const next = [...prev];
+        next[idx] = view;
+        return next;
+      }
+      return [view, ...prev].sort((a, b) => b.id - a.id).slice(0, MAX_JOBS);
     });
   }, []);
 
-  const refreshJobs = useCallback(async () => {
-    try {
-      const data = await api.get<{ jobs: Record<string, unknown>[] }>(
-        '/api/editorial/jobs?type=all&limit=30'
-      );
-      const views = (data.jobs || []).map((j) => normalizeJobPayload(j));
-      if (!hydrated) {
-        for (const j of views) {
-          if (j.status === 'completed' || j.status === 'failed') {
-            seenCompleted.add(j.id);
-            seenTerminal.add(j.id);
-          }
-        }
-        setHydrated(true);
-      }
-      setJobs(views);
-      const tracked = loadTrackedJobIds();
-      const activeIds = views
-        .filter((j) => j.status === 'queued' || j.status === 'running')
-        .map((j) => j.id);
-      saveTrackedJobIds([...new Set([...tracked, ...activeIds])]);
-    } catch {
-      /* ignore */
-    }
-  }, [hydrated, seenCompleted, seenTerminal]);
+  /** Insert a placeholder only if the job is not already known. */
+  const ensureJob = useCallback((placeholder: DraftJobView) => {
+    setJobs((prev) =>
+      prev.some((j) => j.id === placeholder.id)
+        ? prev
+        : [placeholder, ...prev].sort((a, b) => b.id - a.id).slice(0, MAX_JOBS)
+    );
+  }, []);
 
-  const emitJobTerminal = useCallback(
-    (job: DraftJobView) => {
-      if (job.status !== 'completed' && job.status !== 'failed') return;
-      mergeJob(job);
-      // Avoid toasting historical jobs before the first jobs list hydrate.
-      if (!hydrated) {
-        seenTerminal.add(job.id);
-        seenCompleted.add(job.id);
-        return;
-      }
-      if (seenTerminal.has(job.id)) return;
-      seenTerminal.add(job.id);
-      if (job.status === 'completed' && !seenCompleted.has(job.id)) {
-        seenCompleted.add(job.id);
-        const articleId = job.article_id || job.progress.article_id;
-        const isRevision = job.job_type === 'revision_batch';
-        setToasts((t) => [
-          ...t,
+  /**
+   * Toast + notify subscribers once per job reaching completed/failed.
+   * Never writes `jobs` — writing here from the effect over `jobs` caused a
+   * perpetual render loop that exhausted the admin tab's memory.
+   */
+  const notifyTerminal = useCallback((job: DraftJobView) => {
+    if (!isTerminalJobStatus(job.status)) return;
+    const seen = seenTerminalRef.current;
+    if (seen.has(job.id)) return;
+    seen.add(job.id);
+    // Avoid toasting historical jobs before the first jobs list hydrate.
+    if (!hydratedRef.current) return;
+    if (job.status === 'completed') {
+      const articleId = job.article_id || job.progress.article_id;
+      const isRevision = job.job_type === 'revision_batch';
+      setToasts((t) =>
+        [
+          ...t.filter((x) => x.id !== `done-${job.id}`),
           {
             id: `done-${job.id}`,
             title: isRevision
@@ -301,126 +305,183 @@ export function JobsProvider({
             body: job.topic_title || job.progress.topic_title || `Job #${job.id}`,
             articleId: articleId ? Number(articleId) : undefined,
           },
-        ]);
+        ].slice(-MAX_TOASTS)
+      );
+    }
+    for (const h of terminalHandlersRef.current) {
+      try {
+        h(job);
+      } catch {
+        /* ignore */
       }
-      for (const h of terminalHandlers) {
-        try {
-          h(job);
-        } catch {
-          /* ignore */
-        }
-      }
+    }
+  }, []);
+
+  /** Drawer saw a terminal frame: record it in the list, then notify once. */
+  const handleDrawerTerminal = useCallback(
+    (job: DraftJobView) => {
+      mergeJob(job);
+      notifyTerminal(job);
     },
-    [mergeJob, hydrated, seenTerminal, seenCompleted, terminalHandlers]
+    [mergeJob, notifyTerminal]
   );
+
+  const refreshJobs = useCallback(async () => {
+    // Single-flight: overlapping callers share one request.
+    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    const run = (async () => {
+      try {
+        const data = await api.get<{ jobs: Record<string, unknown>[] }>(
+          `/api/editorial/jobs?type=all&limit=${MAX_JOBS}&view=list`
+        );
+        const views = (data.jobs || []).map((j) => normalizeJobPayload(j));
+        const firstLoad = !hydratedRef.current;
+        if (firstLoad) {
+          for (const j of views) {
+            if (isTerminalJobStatus(j.status)) seenTerminalRef.current.add(j.id);
+          }
+          hydratedRef.current = true;
+        }
+        setJobs((prev) => (sameJobList(prev, views) ? prev : views));
+
+        // Reconnect jobs started in this tab that fell outside the list window,
+        // then forget tracked ids that have finished.
+        const byId = new Map(views.map((j) => [j.id, j]));
+        const tracked = loadTrackedJobIds();
+        if (firstLoad) {
+          for (const id of tracked.filter((x) => !byId.has(x)).slice(0, 5)) {
+            try {
+              const one = await api.get<{ job: Record<string, unknown> }>(`/api/editorial/jobs/${id}`);
+              const view = normalizeJobPayload(one.job);
+              byId.set(view.id, view);
+              mergeJob(view);
+            } catch {
+              /* gone */
+            }
+          }
+        }
+        const activeIds = views.filter((j) => !isTerminalJobStatus(j.status)).map((j) => j.id);
+        const stillTracked = tracked.filter((id) => {
+          const j = byId.get(id);
+          return j ? !isTerminalJobStatus(j.status) : false;
+        });
+        saveTrackedJobIds([...new Set([...stillTracked, ...activeIds])]);
+      } catch {
+        /* ignore */
+      } finally {
+        lastRefreshAtRef.current = Date.now();
+      }
+    })().finally(() => {
+      refreshInFlightRef.current = null;
+    });
+    refreshInFlightRef.current = run;
+    return run;
+  }, [mergeJob]);
+
   useEffect(() => {
     void refreshJobs();
-    const timer = setInterval(() => void refreshJobs(), 8000);
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      const anyActive = jobsRef.current.some((j) => !isTerminalJobStatus(j.status));
+      const due = anyActive ? ACTIVE_POLL_MS : IDLE_POLL_MS;
+      if (Date.now() - lastRefreshAtRef.current < due - 250) return;
+      void refreshJobs();
+    }, ACTIVE_POLL_MS);
     return () => clearInterval(timer);
   }, [refreshJobs]);
 
-  // Reconnect tracked jobs after refresh
-  useEffect(() => {
-    const tracked = loadTrackedJobIds();
-    if (!tracked.length) return;
-    void (async () => {
-      for (const id of tracked) {
-        try {
-          const data = await api.get<{ job: Record<string, unknown> }>(`/api/editorial/jobs/${id}`);
-          mergeJob(normalizeJobPayload(data.job));
-        } catch {
-          /* gone */
-        }
-      }
-    })();
-  }, [mergeJob]);
-
-  // Toast + subscriber notify when jobs finish (drawer or background poll)
+  // Toast + subscriber notify when jobs finish (drawer or background poll).
+  // notifyTerminal is idempotent per job and does not touch `jobs`.
   useEffect(() => {
     for (const j of jobs) {
-      if (j.status === 'completed' || j.status === 'failed') {
-        emitJobTerminal(j);
-      }
+      if (isTerminalJobStatus(j.status)) notifyTerminal(j);
     }
-  }, [jobs, emitJobTerminal]);
+  }, [jobs, notifyTerminal]);
+
+  /** Shared enqueue path: dedupes concurrent calls with the same key. */
+  const runEnqueue = useCallback(
+    (
+      key: string,
+      request: () => Promise<EnqueueGenerateResult>,
+      placeholder: (jobId: number, status: string) => DraftJobView | null
+    ): Promise<EnqueueGenerateResult> => {
+      const inFlight = enqueueInFlightRef.current;
+      const pending = inFlight.get(key);
+      if (pending) return pending;
+      const run = (async () => {
+        const result = await request();
+        if (result.jobId) {
+          const ids = loadTrackedJobIds();
+          saveTrackedJobIds([result.jobId, ...ids.filter((x) => x !== result.jobId)]);
+          setDrawerJobId(result.jobId);
+          const ph = placeholder(result.jobId, result.status || 'queued');
+          if (ph) ensureJob(ph);
+          void refreshJobs();
+        }
+        return result;
+      })().finally(() => {
+        inFlight.delete(key);
+      });
+      inFlight.set(key, run);
+      return run;
+    },
+    [ensureJob, refreshJobs]
+  );
 
   const enqueueGenerate = useCallback(
-    async (topicId: number, opts?: { reuse_research?: boolean }) => {
-      const result = await api.post<EnqueueGenerateResult>('/api/editorial/articles/generate', {
-        topic_id: topicId,
-        reuse_research: opts?.reuse_research,
-      });
-      if (result.jobId) {
-        const ids = loadTrackedJobIds();
-        saveTrackedJobIds([result.jobId, ...ids.filter((x) => x !== result.jobId)]);
-        setDrawerJobId(result.jobId);
-        try {
-          const data = await api.get<{ job: Record<string, unknown> }>(
-            `/api/editorial/jobs/${result.jobId}`
-          );
-          mergeJob(normalizeJobPayload(data.job));
-        } catch {
-          mergeJob({
-            id: result.jobId,
-            job_type: 'draft_generate',
-            status: result.status || 'queued',
-            progress: {
-              topic_id: topicId,
-              stage: 'queued',
-              stage_label: 'Queued',
-              progress_pct: 0,
-              eta_seconds: null,
-              stages: [],
-              logs: [],
-            },
+    (topicId: number, opts?: { reuse_research?: boolean }) =>
+      runEnqueue(
+        `generate:${topicId}`,
+        () =>
+          api.post<EnqueueGenerateResult>('/api/editorial/articles/generate', {
             topic_id: topicId,
-          });
-        }
-        void refreshJobs();
-      }
-      return result;
-    },
-    [mergeJob, refreshJobs]
+            reuse_research: opts?.reuse_research,
+          }),
+        (jobId, status) => ({
+          id: jobId,
+          job_type: 'draft_generate',
+          status,
+          progress: {
+            topic_id: topicId,
+            stage: 'queued',
+            stage_label: 'Queued',
+            progress_pct: 0,
+            eta_seconds: null,
+            stages: [],
+            logs: [],
+          },
+          topic_id: topicId,
+        })
+      ),
+    [runEnqueue]
   );
 
   const enqueueRevision = useCallback(
-    async (articleId: number, opts?: { reuse_report?: boolean }) => {
-      const result = await api.post<EnqueueRevisionResult>(
-        `/api/editorial/articles/${articleId}/revise`,
-        { reuse_report: opts?.reuse_report !== false }
-      );
-      if (result.jobId) {
-        const ids = loadTrackedJobIds();
-        saveTrackedJobIds([result.jobId, ...ids.filter((x) => x !== result.jobId)]);
-        setDrawerJobId(result.jobId);
-        try {
-          const data = await api.get<{ job: Record<string, unknown> }>(
-            `/api/editorial/jobs/${result.jobId}`
-          );
-          mergeJob(normalizeJobPayload(data.job));
-        } catch {
-          mergeJob({
-            id: result.jobId,
-            job_type: 'revision_batch',
-            status: result.status || 'queued',
-            progress: {
-              topic_id: 0,
-              article_id: articleId,
-              stage: 'queued',
-              stage_label: 'Queued',
-              progress_pct: 0,
-              eta_seconds: null,
-              stages: [],
-              logs: [],
-            },
+    (articleId: number, opts?: { reuse_report?: boolean }) =>
+      runEnqueue(
+        `revise:${articleId}`,
+        () =>
+          api.post<EnqueueRevisionResult>(`/api/editorial/articles/${articleId}/revise`, {
+            reuse_report: opts?.reuse_report !== false,
+          }),
+        (jobId, status) => ({
+          id: jobId,
+          job_type: 'revision_batch',
+          status,
+          progress: {
+            topic_id: 0,
             article_id: articleId,
-          });
-        }
-        void refreshJobs();
-      }
-      return result;
-    },
-    [mergeJob, refreshJobs]
+            stage: 'queued',
+            stage_label: 'Queued',
+            progress_pct: 0,
+            eta_seconds: null,
+            stages: [],
+            logs: [],
+          },
+          article_id: articleId,
+        })
+      ),
+    [runEnqueue]
   );
 
   const cancelJob = useCallback(
@@ -433,26 +494,19 @@ export function JobsProvider({
 
   const retryJob = useCallback(
     async (jobId: number) => {
-      const result = await api.post<EnqueueGenerateResult>(`/api/editorial/jobs/${jobId}/retry`);
-      if (result.jobId) {
-        setDrawerJobId(result.jobId);
-        const ids = loadTrackedJobIds();
-        saveTrackedJobIds([result.jobId, ...ids.filter((x) => x !== result.jobId)]);
-        try {
-          const data = await api.get<{ job: Record<string, unknown> }>(
-            `/api/editorial/jobs/${result.jobId}`
-          );
-          mergeJob(normalizeJobPayload(data.job));
-        } catch {
-          /* refresh below */
-        }
-      }
-      await refreshJobs();
+      await runEnqueue(
+        `retry:${jobId}`,
+        () => api.post<EnqueueGenerateResult>(`/api/editorial/jobs/${jobId}/retry`),
+        () => null
+      );
     },
-    [mergeJob, refreshJobs]
+    [runEnqueue]
   );
 
-  const activeCount = jobs.filter((j) => j.status === 'queued' || j.status === 'running').length;
+  const activeCount = useMemo(
+    () => jobs.filter((j) => j.status === 'queued' || j.status === 'running').length,
+    [jobs]
+  );
 
   // Close the drawer first, then navigate so the overlay is fully unmounted
   // before the article page renders.
@@ -465,20 +519,40 @@ export function JobsProvider({
     [onOpenArticle]
   );
 
-  const value: JobsContextValue = {
-    jobs,
-    activeCount,
-    drawerJobId,
-    openDrawer: setDrawerJobId,
-    closeDrawer: () => setDrawerJobId(null),
-    enqueueGenerate,
-    enqueueRevision,
-    cancelJob,
-    retryJob,
-    refreshJobs,
-    onOpenArticle: handleOpenArticle,
-    subscribeJobTerminal,
-  };
+  const closeDrawer = useCallback(() => setDrawerJobId(null), []);
+  const handleCancel = useCallback((id: number) => void cancelJob(id), [cancelJob]);
+  const handleRetry = useCallback((id: number) => void retryJob(id), [retryJob]);
+  const dismissToast = useCallback((id: string) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+
+  const value = useMemo<JobsContextValue>(
+    () => ({
+      jobs,
+      activeCount,
+      drawerJobId,
+      openDrawer: setDrawerJobId,
+      closeDrawer,
+      enqueueGenerate,
+      enqueueRevision,
+      cancelJob,
+      retryJob,
+      refreshJobs,
+      onOpenArticle: handleOpenArticle,
+      subscribeJobTerminal,
+    }),
+    [
+      jobs,
+      activeCount,
+      drawerJobId,
+      closeDrawer,
+      enqueueGenerate,
+      enqueueRevision,
+      cancelJob,
+      retryJob,
+      refreshJobs,
+      handleOpenArticle,
+      subscribeJobTerminal,
+    ]
+  );
 
   return (
     <JobsContext.Provider value={value}>
@@ -486,18 +560,14 @@ export function JobsProvider({
       <GenerationDrawer
         jobId={drawerJobId}
         open={drawerJobId != null}
-        onClose={() => setDrawerJobId(null)}
+        onClose={closeDrawer}
         onOpenArticle={handleOpenArticle}
-        onCancel={(id) => void cancelJob(id)}
-        onRetry={(id) => void retryJob(id)}
-        onJobTerminal={emitJobTerminal}
+        onCancel={handleCancel}
+        onRetry={handleRetry}
+        onJobTerminal={handleDrawerTerminal}
         debugMode={debugMode}
       />
-      <ToastHost
-        toasts={toasts}
-        onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))}
-        onOpen={handleOpenArticle}
-      />
+      <ToastHost toasts={toasts} onDismiss={dismissToast} onOpen={handleOpenArticle} />
     </JobsContext.Provider>
   );
 }

@@ -60,10 +60,9 @@ export default function RagPipelinePanel() {
   const [auditReport, setAuditReport] = useState<RagAuditReport | null>(null);
   const [auditError, setAuditError] = useState('');
 
-  // Initial load
+  // Initial load: status only. A retrieval is a paid live Gemini call, so it runs on demand.
   useEffect(() => {
     loadStatus();
-    runRetrieval('Austin', 'Seattle');
   }, []);
 
   const loadStatus = async () => {
@@ -103,11 +102,13 @@ export default function RagPipelinePanel() {
     setAuditing(true);
     setAuditError('');
     try {
+      const live = retrievalResult?.status === 'live';
       const res = await auditRagClaims({
         text: draftText,
-        targetCity: targetCity || 'Austin',
-        groundedFacts: retrievalResult?.facts,
-        sources: retrievalResult?.sources,
+        targetCity: targetCity.trim() || undefined,
+        comparisonCity: comparisonCity.trim() || undefined,
+        groundedFacts: live ? retrievalResult?.facts : undefined,
+        sources: live ? retrievalResult?.sources : undefined,
       });
       if (res.ok && res.report) {
         setAuditReport(res.report);
@@ -131,7 +132,16 @@ export default function RagPipelinePanel() {
                 Live Google Search Grounding & RAG
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-slate-200/60 px-2.5 py-0.5 text-[11px] font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                Model: gemini-3.8-flash
+                Model: {ragStatus?.model || '—'}
+              </span>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                  ragStatus?.google_search_enabled
+                    ? 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-300'
+                    : 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/10 dark:text-amber-300'
+                }`}
+              >
+                Grounding: {ragStatus?.search_grounding || '—'}
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-300">
                 <ShieldCheck className="h-3 w-3" /> Factual Quality Gate Active
@@ -206,7 +216,7 @@ export default function RagPipelinePanel() {
           </h2>
           {retrievalResult && (
             <span className="text-xs text-teal-700 dark:text-teal-400 font-semibold">
-              {retrievalResult.sources.length} sources · {retrievalResult.facts.length} verified facts
+              {retrievalResult.sources.length} sources · {retrievalResult.facts.length} source-backed facts
             </span>
           )}
         </div>
@@ -251,6 +261,14 @@ export default function RagPipelinePanel() {
           </div>
 
           {retrievalError && <Callout tone="rose">{retrievalError}</Callout>}
+
+          {retrievalResult && retrievalResult.status !== 'live' && (
+            <Callout tone="amber">
+              No live grounded data ({retrievalResult.status}
+              {retrievalResult.error ? `: ${retrievalResult.error}` : ''}). Nothing is substituted — articles
+              generated now carry no external figures.
+            </Callout>
+          )}
 
           {retrievalResult && (
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
@@ -339,7 +357,12 @@ export default function RagPipelinePanel() {
           <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
             Automated Claim-by-Claim Fact Checker Gate
           </h2>
-          {auditReport && (
+          {auditReport && auditReport.status === 'no_evidence' && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-bold text-amber-700 dark:bg-amber-400/10 dark:text-amber-300">
+              <HelpCircle className="h-3.5 w-3.5" /> NOT AUDITED · no evidence
+            </span>
+          )}
+          {auditReport && auditReport.status !== 'no_evidence' && (
             <span
               className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-bold ${
                 auditReport.passed
@@ -410,7 +433,11 @@ export default function RagPipelinePanel() {
                         <AlertTriangle className="h-5 w-5 text-rose-600 dark:text-rose-400" />
                       )}
                       <h4 className="font-display text-base font-bold">
-                        {auditReport.passed ? 'Editorial Quality Audit Passed' : 'Factual Quality Gate Failed — Action Required'}
+                        {auditReport.status === 'no_evidence'
+                          ? 'Not audited — run a grounding search first'
+                          : auditReport.passed
+                            ? 'Editorial Quality Audit Passed'
+                            : 'Factual Quality Gate Failed — Action Required'}
                       </h4>
                     </div>
                     <p className="mt-1 text-xs opacity-90">{auditReport.summary}</p>

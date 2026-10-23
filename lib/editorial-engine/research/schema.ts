@@ -151,9 +151,15 @@ export interface ResearchPack {
     city?: string;
     figure?: string;
     sourceId: number;
+    sourceIds?: number[];
     citationRef: string;
   }>;
+  /** Legacy field: was a hardcoded 96 on older packs; no longer written. */
   rag_accuracy_score?: number;
+  /** Outcome of live grounding for this pack (live | no_evidence | unavailable | error). */
+  rag_status?: string;
+  rag_error?: string;
+  rag_model?: string;
 }
 
 export class ResearchPackValidationError extends Error {

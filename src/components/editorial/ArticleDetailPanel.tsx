@@ -1467,7 +1467,7 @@ export default function ArticleDetailPanel({
                 <ScoreCard label="Readability" value={panel.readability_score} />
                 <ScoreCard
                   label="Factual Grounding"
-                  value={qualityReport?.scores?.factual_grounding ?? 96}
+                  value={qualityReport?.scores?.factual_grounding ?? null}
                 />
               </div>
               {!workflow.publishReady && !workflow.showAutoFixBanner && (
@@ -1577,7 +1577,7 @@ export default function ArticleDetailPanel({
           <ScoreBar label="Readability" value={panel.readability_score} />
           <ScoreBar
             label="Factual Grounding"
-            value={qualityReport?.scores?.factual_grounding ?? 96}
+            value={qualityReport?.scores?.factual_grounding ?? null}
           />
           <KeyValue label="Word Count" value={preview.word_count} />
           <KeyValue label="Internal Links" value={bodyLinkCount} />
@@ -1720,7 +1720,8 @@ function ResearchSummary({
   const r = research as ResearchPreview & {
     grounding_sources?: Array<{ id: number; title: string; url: string; domain: string; retrievedAt?: string }>;
     grounded_facts?: Array<{ category: string; statement: string; citationRef: string; figure?: string }>;
-    rag_accuracy_score?: number;
+    rag_status?: string;
+    rag_error?: string;
   };
 
   return (
@@ -1748,17 +1749,17 @@ function ResearchSummary({
         {r.article_angle || '—'}
       </p>
 
-      {/* RAG Grounding Sources */}
-      {Array.isArray(r.grounding_sources) && r.grounding_sources.length > 0 && (
+      {/* RAG Grounding Sources — only source-verified (rag_status=live) packs */}
+      {r.rag_status === 'live' && Array.isArray(r.grounding_sources) && r.grounding_sources.length > 0 && (
         <div className="rounded-xl border border-teal-500/20 bg-teal-50/20 p-3 dark:border-teal-500/20 dark:bg-teal-950/10">
           <div className="flex items-center justify-between">
             <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-teal-800 dark:text-teal-300">
               <Globe className="h-3.5 w-3.5" />
               Live Grounding Sources ({r.grounding_sources.length})
             </p>
-            {r.rag_accuracy_score && (
+            {r.rag_status === 'live' && (
               <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                {r.rag_accuracy_score}% Grounded
+                Live Google Search
               </span>
             )}
           </div>
@@ -1782,8 +1783,22 @@ function ResearchSummary({
         </div>
       )}
 
+      {!r.rag_status && (Array.isArray(r.grounding_sources) || Array.isArray(r.grounded_facts)) && (
+        <p className="rounded-lg border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
+          This draft was researched before source-verified grounding. Its web facts and [^n] citations are
+          unverified (they may be placeholder benchmarks) — check every figure before publishing.
+        </p>
+      )}
+
+      {r.rag_status && r.rag_status !== 'live' && (
+        <p className="rounded-lg border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
+          No live grounding for this draft ({r.rag_status}
+          {r.rag_error ? `: ${r.rag_error}` : ''}). No external figures were added to the research pack.
+        </p>
+      )}
+
       {/* Grounded Benchmark Facts */}
-      {Array.isArray(r.grounded_facts) && r.grounded_facts.length > 0 && (
+      {r.rag_status === 'live' && Array.isArray(r.grounded_facts) && r.grounded_facts.length > 0 && (
         <div>
           <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
             Real-Time Grounded Facts ({r.grounded_facts.length})

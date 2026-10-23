@@ -661,6 +661,7 @@ export interface GroundedFact {
   city?: string;
   figure?: string;
   sourceId: number;
+  sourceIds?: number[];
   citationRef: string;
 }
 
@@ -678,7 +679,9 @@ export interface ClaimAuditResult {
 }
 
 export interface RagAuditReport {
-  accuracyScore: number;
+  /** audited | no_evidence (nothing to check against — no score) */
+  status?: 'audited' | 'no_evidence';
+  accuracyScore: number | null;
   totalClaims: number;
   verifiedCount: number;
   disputedCount: number;
@@ -690,7 +693,12 @@ export interface RagAuditReport {
   auditedAt: string;
 }
 
+export type RagRetrievalStatus = 'live' | 'no_evidence' | 'unavailable' | 'error';
+
 export interface RagRetrievalResult {
+  status: RagRetrievalStatus;
+  error?: string;
+  unsupportedDropped?: number;
   query: string;
   targetCity: string;
   comparisonCity?: string;
@@ -732,10 +740,11 @@ export async function auditRagClaims(params: {
   text?: string;
   blocks?: unknown[];
   targetCity?: string;
+  comparisonCity?: string;
   groundedFacts?: GroundedFact[];
   sources?: GroundingSource[];
-}): Promise<{ ok: boolean; report: RagAuditReport }> {
-  return request<{ ok: boolean; report: RagAuditReport }>('/api/editorial/rag/audit', {
+}): Promise<{ ok: boolean; report: RagAuditReport; retrieval?: { status: string; error?: string } }> {
+  return request<{ ok: boolean; report: RagAuditReport; retrieval?: { status: string; error?: string } }>('/api/editorial/rag/audit', {
     method: 'POST',
     body: JSON.stringify(params),
   });

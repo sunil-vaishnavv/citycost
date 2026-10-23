@@ -10,6 +10,7 @@ export type {
 } from './schema.js';
 export { ResearchPackValidationError } from './schema.js';
 export { assembleResearchPack, buildResearchPack, buildGroundedResearchPackAsync, previewResearchPack } from './build.js';
+export { stripUntrustedGrounding, trustedRagEvidence } from './rag-trust.js';
 export { validateResearchPack } from './validate.js';
 export { extractResearchEntities } from './entities.js';
 export { extractResearchKeywords } from './keywords.js';
