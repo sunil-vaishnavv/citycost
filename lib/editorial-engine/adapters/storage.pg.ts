@@ -1,7 +1,7 @@
 import { pool } from '../../db.js';
 import type { StoragePort } from '../types.js';
 
-export function createMysqlStorage(): StoragePort {
+export function createPostgresStorage(): StoragePort {
   return {
     async ping() {
       if (!pool) return false;

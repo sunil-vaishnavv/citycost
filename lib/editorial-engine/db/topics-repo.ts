@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import crypto from 'crypto';
 import { pool } from '../../db.js';
 import type { EditorialTopic, ScoreBreakdown, TopicStatus } from '../types.js';

@@ -2,7 +2,7 @@
  * Internal links repo — replace-set per article (recommendations snapshot).
  */
 
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 
 export interface InternalLinkRow {

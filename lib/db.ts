@@ -1,31 +1,35 @@
 /**
- * PostgreSQL connection layer (Neon-ready).
+ * PostgreSQL connection layer (node-postgres).
  *
- * Exports a mysql2-shaped `pool` so existing repositories keep compiling
- * without SQL rewrites in this phase. Placeholder `?` → `$n` is handled here;
- * MySQL-specific SQL will be migrated in a later phase.
+ * `pool.execute` / `pool.query` return `[rows, result]` tuples, and `?`
+ * placeholders are converted to `$n`, so repositories share one small API.
  */
 
 import dotenv from 'dotenv';
 import pg from 'pg';
-import type { Pool as MysqlPool } from 'mysql2/promise';
 
 dotenv.config();
 
 const { Pool } = pg;
 
-/** Minimal mysql2-compatible result header for INSERT/UPDATE/DELETE. */
+/** Result header for INSERT/UPDATE/DELETE. */
 export interface DbResultHeader {
   insertId: number;
   affectedRows: number;
   rowCount: number;
 }
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/** One row returned by a SELECT through `pool`. */
+export type RowDataPacket = Record<string, any>;
+/** Result of INSERT/UPDATE/DELETE through `pool`. */
+export type ResultSetHeader = DbResultHeader;
+
 type SqlParams = unknown[] | undefined;
 
-interface CompatConnection {
-  execute<T = unknown>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
-  query<T = unknown>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
+export interface CompatConnection {
+  execute<T = any>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
+  query<T = any>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
   ping(): Promise<void>;
   beginTransaction(): Promise<void>;
   commit(): Promise<void>;
@@ -33,15 +37,17 @@ interface CompatConnection {
   release(): void;
 }
 
-interface CompatPool {
-  execute<T = unknown>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
-  query<T = unknown>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
+export interface CompatPool {
+  execute<T = any>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
+  query<T = any>(sql: string, params?: SqlParams): Promise<[T, unknown]>;
   getConnection(): Promise<CompatConnection>;
   end(): Promise<void>;
   on(event: 'error', listener: (err: Error) => void): void;
 }
 
-/** Convert mysql2 `?` placeholders to node-postgres `$1`, `$2`, … */
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/** Convert `?` placeholders to node-postgres `$1`, `$2`, … */
 export function toPgParams(sql: string): string {
   let i = 0;
   return sql.replace(/\?/g, () => `$${++i}`);
@@ -132,16 +138,29 @@ function resolveDatabaseUrl(): string | null {
   return url || null;
 }
 
+/**
+ * TLS is on by default (`sslmode=require`). Turn it off for a Postgres that does
+ * not serve TLS — e.g. Coolify's internal Docker network — with
+ * `DATABASE_SSL=false` or `sslmode=disable` in DATABASE_URL.
+ */
+function sslDisabled(url: string): boolean {
+  const flag = (process.env.DATABASE_SSL || '').trim().toLowerCase();
+  return ['false', '0', 'off', 'disable', 'no'].includes(flag) || /[?&]sslmode=disable\b/i.test(url);
+}
+
+function withoutSslMode(url: string): string {
+  return url
+    .replace(/([?&])sslmode=[^&]*(&|$)/i, (_m, lead: string, tail: string) => (tail ? lead : ''))
+    .replace(/[?&]$/, '');
+}
+
 function ensureSslInUrl(url: string): string {
   if (/[?&]sslmode=/i.test(url)) return url;
   return url.includes('?') ? `${url}&sslmode=require` : `${url}?sslmode=require`;
 }
 
-/**
- * Exported as mysql2.Pool for compile compatibility with existing repos.
- * Runtime implementation is PostgreSQL via `pg`.
- */
-let pool: MysqlPool | null = null;
+/** Shared PostgreSQL pool (null when DATABASE_URL is unset or pool creation failed). */
+let pool: CompatPool | null = null;
 let rawPool: pg.Pool | null = null;
 let compatPool: CompatPool | null = null;
 
@@ -149,15 +168,16 @@ const databaseUrl = resolveDatabaseUrl();
 
 if (databaseUrl) {
   try {
+    const noSsl = sslDisabled(databaseUrl);
     rawPool = new Pool({
-      connectionString: ensureSslInUrl(databaseUrl),
+      connectionString: noSsl ? withoutSslMode(databaseUrl) : ensureSslInUrl(databaseUrl),
       max: parseInt(process.env.PG_POOL_MAX || '10', 10),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 15_000,
-      ssl: { rejectUnauthorized: false },
+      ssl: noSsl ? false : { rejectUnauthorized: false },
     });
     compatPool = createCompatPool(rawPool);
-    pool = compatPool as unknown as MysqlPool;
+    pool = compatPool;
     compatPool.on('error', (err) => {
       console.warn('⚠️  PostgreSQL pool error (non-fatal):', err.message);
     });

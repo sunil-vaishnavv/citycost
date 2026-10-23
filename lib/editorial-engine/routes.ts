@@ -124,7 +124,7 @@ import { pool } from '../db.js';
 
 async function requireEditorialAuth(req: Request, res: Response, next: NextFunction) {
   if (!pool) {
-    return res.status(503).json({ error: 'Editorial Engine disabled (MySQL unavailable).' });
+    return res.status(503).json({ error: 'Editorial Engine disabled (database unavailable).' });
   }
   const token = getSessionTokenFromRequest(req);
   const ok = await validateSession(token);
@@ -260,7 +260,7 @@ export function createEditorialRouter(): Router {
   router.post('/auth/login', loginLimiter, requireOrigin, async (req, res) => {
     try {
       if (!pool) {
-        return res.status(503).json({ error: 'Editorial Engine disabled (MySQL unavailable).' });
+        return res.status(503).json({ error: 'Editorial Engine disabled (database unavailable).' });
       }
       if (!(await isAdminConfigured())) {
         return res.status(503).json({
@@ -306,7 +306,7 @@ export function createEditorialRouter(): Router {
     } = await import('./observability/dashboard-metrics.js');
 
     // Core cards first: parallelize independent reads. Observability is cache-only
-    // here (no cold compute) so Neon aggregates never contend with count cards.
+    // here (no cold compute) so heavy aggregates never contend with count cards.
     const [health, settings, automation, counts, contentGapsOpen, observability] =
       await Promise.all([
         getEditorialHealth(),
@@ -1027,7 +1027,6 @@ export function createEditorialRouter(): Router {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
       if (typeof (res as Response & { flushHeaders?: () => void }).flushHeaders === 'function') {
         (res as Response & { flushHeaders: () => void }).flushHeaders();
       }
@@ -1891,7 +1890,7 @@ export function createEditorialRouter(): Router {
       queue: 'db',
       scheduler: 'inprocess',
       scheduler_jobs: rt?.scheduler.listRegistered() || [],
-      storage: 'mysql',
+      storage: 'postgresql',
       phase: EDITORIAL_PHASE,
       version: EDITORIAL_ENGINE_VERSION,
     });

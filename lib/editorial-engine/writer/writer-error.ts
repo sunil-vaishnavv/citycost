@@ -10,7 +10,7 @@ const SECRET_PATTERNS = [
   /Bearer\s+[A-Za-z0-9._-]+/i,
   /password/i,
   /postgresql:\/\//i,
-  /mysql:\/\//i,
+  /postgres:\/\//i,
 ];
 
 /** Strip secrets and trim overly long messages for client exposure. */

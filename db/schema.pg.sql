@@ -1,4 +1,4 @@
--- CityCost Global — PostgreSQL / Neon schema (COL core)
+-- CityCost Global — PostgreSQL schema (COL core)
 -- Apply: psql "$DATABASE_URL" -f db/schema.pg.sql
 -- Does not include Editorial Engine tables.
 

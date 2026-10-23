@@ -4,7 +4,7 @@
 
 import { pool } from '../../../../db.js';
 import type { WriterDraftPayload } from '../../draft-validate.js';
-import type { RowDataPacket } from 'mysql2/promise';
+import type { RowDataPacket } from '../../../../db.js';
 
 export interface MemoryDoc {
   id: number;

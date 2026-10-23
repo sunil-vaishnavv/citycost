@@ -4,7 +4,7 @@
  * dashboard never blocks on a cold/slow metrics pass.
  */
 
-import type { RowDataPacket } from 'mysql2';
+import type { RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import { getRevisionStats } from '../revision/revision-history.js';
 import { getAiUsageSummary } from '../db/ai-settings-repo.js';
@@ -199,7 +199,7 @@ export async function getObservabilityDashboardMetrics(
 
 /**
  * For the main dashboard: never start heavy aggregates here.
- * Return warm cache only so core count cards are not competing with Neon
+ * Return warm cache only so core count cards are not competing with heavy aggregates
  * observability queries. UI loads `/dashboard/observability` progressively.
  */
 export async function getObservabilityDashboardMetricsFast(

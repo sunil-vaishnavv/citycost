@@ -180,7 +180,7 @@ app.use('/editorial-control', (_req, res) => {
   res.redirect(301, '/admin');
 });
 
-// Editorial Engine (P0 foundation) — independent module; requires MySQL + admin bootstrap
+// Editorial Engine (P0 foundation) — independent module; requires PostgreSQL + admin bootstrap
 app.use('/api/editorial', createEditorialRouter());
 
 // Public blog API — published articles only (no drafts/review)
@@ -898,7 +898,7 @@ app.use((err: unknown, _req: express.Request, res: express.Response, next: expre
 
 async function start() {
   await testConnection();
-  // Editorial P0: schema ensure + seeds + admin bootstrap (no-op if MySQL down)
+  // Editorial P0: schema ensure + seeds + admin bootstrap (no-op if the database is down)
   await initEditorialEngine();
 
   const server = http.createServer(app);

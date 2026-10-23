@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import { DEFAULT_STRATEGY_WEIGHTS } from '../constants.js';
 import type { StrategyWeights } from '../types.js';

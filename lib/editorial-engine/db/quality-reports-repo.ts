@@ -2,7 +2,7 @@
  * Quality reports repo — append-only. Never overwrite prior reports.
  */
 
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import type { QualityReport } from '../reviewer/quality-report.js';
 

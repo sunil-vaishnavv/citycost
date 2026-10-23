@@ -5,7 +5,7 @@ import {
 } from './ai/ai-router.js';
 import { createDbQueue } from './adapters/queue.db.js';
 import { createInProcessScheduler } from './adapters/scheduler.inprocess.js';
-import { createMysqlStorage } from './adapters/storage.mysql.js';
+import { createPostgresStorage } from './adapters/storage.pg.js';
 import { bootstrapAdminFromEnv } from './db/admin-repo.js';
 import { ensureAiProviderSettings } from './db/ai-settings-repo.js';
 import { ensureDefaultContentTypes } from './db/content-types-repo.js';
@@ -29,18 +29,18 @@ export interface EditorialRuntime {
 let runtime: EditorialRuntime | null = null;
 
 /**
- * Idempotent bootstrap. Safe when MySQL is down (returns ready:false).
+ * Idempotent bootstrap. Safe when the database is down (returns ready:false).
  */
 export async function initEditorialEngine(): Promise<EditorialRuntime> {
   const scheduler = createInProcessScheduler();
   const queue = createDbQueue();
   // Multi-provider AI Router (Groq retained as first-class provider + env fallback)
   const ai = createRoutedAiProvider();
-  const storage = createMysqlStorage();
+  const storage = createPostgresStorage();
 
   if (!pool) {
     runtime = { ready: false, scheduler, queue, ai, storage };
-    console.warn('⚠️  Editorial Engine inactive — MySQL unavailable');
+    console.warn('⚠️  Editorial Engine inactive — database unavailable');
     return runtime;
   }
 
@@ -48,7 +48,7 @@ export async function initEditorialEngine(): Promise<EditorialRuntime> {
     const reachable = await storage.ping();
     if (!reachable) {
       runtime = { ready: false, scheduler, queue, ai, storage };
-      console.warn('⚠️  Editorial Engine inactive — MySQL connection refused');
+      console.warn('⚠️  Editorial Engine inactive — database connection refused');
       return runtime;
     }
 

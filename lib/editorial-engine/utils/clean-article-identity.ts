@@ -2,7 +2,7 @@
  * Persist cleaned public titles/slugs (strip cert-batch QA markers).
  */
 
-import type { RowDataPacket } from 'mysql2';
+import type { RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import {
   getArticleById,

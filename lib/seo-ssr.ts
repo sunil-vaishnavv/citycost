@@ -857,7 +857,7 @@ export function resolveSeoHtml(html: string, pathname: string): SeoHtmlResult {
 }
 
 /**
- * Async SSR entry — blog uses MySQL; all other routes stay on sync resolveSeoHtml.
+ * Async SSR entry — blog uses PostgreSQL; all other routes stay on sync resolveSeoHtml.
  */
 export async function resolveSeoHtmlAsync(
   html: string,

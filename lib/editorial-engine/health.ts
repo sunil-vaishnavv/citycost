@@ -7,7 +7,7 @@ import { isEditorialSchemaReady } from './schema-bootstrap.js';
 import type { ComponentReadiness, EditorialHealth } from './types.js';
 import { pool } from '../db.js';
 
-async function pingMysql(): Promise<boolean> {
+async function pingDatabase(): Promise<boolean> {
   if (!pool) return false;
   try {
     const conn = await pool.getConnection();
@@ -53,18 +53,18 @@ function baseDisabled(
 
 export async function getEditorialHealth(): Promise<EditorialHealth> {
   if (!pool) {
-    return baseDisabled('Editorial Engine disabled — MySQL pool unavailable (COL app unaffected).');
+    return baseDisabled('Editorial Engine disabled — database pool unavailable (COL app unaffected).');
   }
 
   // Schema check also proves connectivity — skip a separate ping RTT on the hot path.
   const schema_ready = await isEditorialSchemaReady();
   if (!schema_ready) {
-    const databaseUp = await pingMysql();
+    const databaseUp = await pingDatabase();
     if (!databaseUp) {
-      return baseDisabled('Editorial Engine disabled — MySQL connection refused (COL app unaffected).');
+      return baseDisabled('Editorial Engine disabled — database connection refused (COL app unaffected).');
     }
     return baseDisabled(
-      'Editorial schema not ready — run db/editorial-schema.sql or restart after MySQL is up.',
+      'Editorial schema not ready — restart the server once PostgreSQL is reachable (schema is applied on boot).',
       {
         database: true,
         components: {

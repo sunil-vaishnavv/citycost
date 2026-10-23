@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import { CONTENT_TYPE_SEEDS } from '../constants.js';
 import type { ContentTypeRow } from '../types.js';

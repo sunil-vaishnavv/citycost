@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import type { WriterDraftPayload } from '../writer/draft-validate.js';
 import type { RevisionHistoryRow } from './revision-types.js';

@@ -3,7 +3,7 @@
  * Never reuse unrestricted admin queries for public surfaces.
  */
 
-import type { RowDataPacket } from 'mysql2';
+import type { RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import { SITE_URL } from '../../../src/utils/seo.js';
 import type { WriterDraftPayload } from '../writer/draft-validate.js';

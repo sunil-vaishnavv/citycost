@@ -361,7 +361,7 @@ export interface AiProviderPort {
   }>;
 }
 
-/** Port: persistence facade (MySQL). */
+/** Port: persistence facade (PostgreSQL). */
 export interface StoragePort {
   ping(): Promise<boolean>;
 }

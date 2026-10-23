@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import { DRAFT_GENERATE_JOB_TYPE } from '../jobs/draft-job-types.js';
 import type { EditorialJobRow } from '../types.js';
@@ -211,7 +211,7 @@ export async function claimNextQueuedJob(
 ): Promise<EditorialJobRow | null> {
   if (!pool) return null;
   const client = pool;
-  // Neon/pg via mysql2-compatible wrapper — use single UPDATE…RETURNING pattern
+  // PostgreSQL: single UPDATE…RETURNING with SKIP LOCKED claims one job atomically
   const [rows] = await client.execute<RowDataPacket[]>(
     `WITH next AS (
        SELECT id FROM editorial_jobs

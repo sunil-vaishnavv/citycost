@@ -1,4 +1,4 @@
--- CityCost Editorial Engine — Foundation tables (PostgreSQL / Neon)
+-- CityCost Editorial Engine — Foundation tables (PostgreSQL)
 -- Phase 3A: settings, prompts, content types, clusters, topics, scores,
 -- strategy, gaps, calendar, admin, sessions.
 -- Does NOT create articles / SEO / jobs / quality / publish / refresh tables.

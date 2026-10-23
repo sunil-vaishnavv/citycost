@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import { decryptApiKey, encryptApiKey, maskApiKey } from '../ai/crypto-keys.js';
 import { PROVIDER_DEFAULTS, getProviderDefaults } from '../ai/provider-config.js';

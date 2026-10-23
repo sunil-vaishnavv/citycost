@@ -25,7 +25,7 @@ import {
 } from '../lib/editorial-engine/db/articles-repo.js';
 import { getLatestQualityReport } from '../lib/editorial-engine/db/quality-reports-repo.js';
 import { pool } from '../lib/db.js';
-import type { RowDataPacket } from 'mysql2';
+import type { RowDataPacket } from '../lib/db.js';
 import {
   ensureClusterRegistry,
   getClusterBySlug,

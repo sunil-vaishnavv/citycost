@@ -1,4 +1,4 @@
--- CityCost Editorial Engine — Infrastructure tables (PostgreSQL / Neon)
+-- CityCost Editorial Engine — Infrastructure tables (PostgreSQL)
 -- Final phase: jobs queue, refresh logs.
 -- Scheduler / automation / retry use editorial_jobs + editorial_settings (already migrated).
 -- Does NOT alter foundation/content tables.

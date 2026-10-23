@@ -7,7 +7,7 @@ import { listQualityReports, getLatestQualityReport } from '../db/quality-report
 import { listRevisionHistory } from '../revision/revision-history.js';
 import { getPublishReadiness } from '../publish/publish-gate.js';
 import { pool } from '../../db.js';
-import type { RowDataPacket } from 'mysql2';
+import type { RowDataPacket } from '../../db.js';
 import { getArticleCostAnalytics, listArticleAiUsageLogs } from './cost-analytics.js';
 import { computeArticleHealth } from './article-health.js';
 import type { QualityReport } from '../reviewer/quality-report.js';

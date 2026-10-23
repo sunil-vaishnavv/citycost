@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 import { DEFAULT_EDITORIAL_SETTINGS, DEFAULT_STRATEGY_WEIGHTS } from '../constants.js';
 import { assertAllowedGroqModel, isAllowedGroqModel } from '../groq-models.js';

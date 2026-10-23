@@ -2,7 +2,7 @@
  * Per-article AI cost + provider analytics from usage logs + generation logs.
  */
 
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { ResultSetHeader, RowDataPacket } from '../../db.js';
 import { pool } from '../../db.js';
 
 export interface StageCostBucket {

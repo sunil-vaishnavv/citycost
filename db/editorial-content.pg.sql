@@ -1,4 +1,4 @@
--- CityCost Editorial Engine — Content Domain tables (PostgreSQL / Neon)
+-- CityCost Editorial Engine — Content Domain tables (PostgreSQL)
 -- Phase 3B: articles, drafts, quality reports, SEO JSON columns, internal links,
 -- generation logs, publishing logs, data snapshots.
 -- Requires foundation tables (clusters, topics) from editorial-foundation.pg.sql.

@@ -1,7 +1,7 @@
 /**
  * City data repository — cache-first over the COL engine.
  * Never overwrites verified/real rows with estimates.
- * SQL: PostgreSQL (Neon). Business logic unchanged from MySQL era.
+ * SQL: PostgreSQL.
  */
 
 import * as dbModule from './db.js';
