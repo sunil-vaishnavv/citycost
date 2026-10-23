@@ -25,13 +25,10 @@ export const PROVIDER_DEFAULTS: ProviderDefaults[] = [
     name: 'groq',
     label: 'Groq',
     priority: 10,
-    default_model: 'llama-3.3-70b-versatile',
-    models: [
-      'llama-3.3-70b-versatile',
-      'llama-3.1-8b-instant',
-      'llama-3.1-70b-versatile',
-      'gemma2-9b-it',
-    ],
+    // Groq retired the llama-3.x / gemma2 chat lines; live list is fetched at runtime
+    // (model-catalog.ts) and these are only the offline fallback.
+    default_model: 'openai/gpt-oss-120b',
+    models: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'],
     temperature: 0.45,
     top_p: 0.9,
     max_output_tokens: 8192,
@@ -53,10 +50,10 @@ export const PROVIDER_DEFAULTS: ProviderDefaults[] = [
     models: [
       'gemini-flash-latest',
       'gemini-flash-lite-latest',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-2.5-flash',
       'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.6-flash',
+      'gemini-3.8-flash',
     ],
     temperature: 0.45,
     top_p: 0.9,
@@ -116,9 +113,9 @@ export const PROVIDER_DEFAULTS: ProviderDefaults[] = [
     default_model: 'openai/gpt-4o-mini',
     models: [
       'openai/gpt-4o-mini',
-      'google/gemini-2.0-flash-001',
-      'anthropic/claude-3.5-sonnet',
       'meta-llama/llama-3.3-70b-instruct',
+      'google/gemma-4-31b-it:free',
+      'nvidia/nemotron-3-super-120b-a12b:free',
     ],
     temperature: 0.45,
     top_p: 0.9,

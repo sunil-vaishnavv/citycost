@@ -22,7 +22,14 @@ function nextId(seq: { n: number }): string {
   return `blk-${Date.now()}-${seq.n}`;
 }
 
-function headingLevel(block: DraftBlock): number {
+export interface EditorInputBlock {
+  id?: string;
+  type: string;
+  heading?: string;
+  content?: unknown;
+}
+
+function headingLevel(block: EditorInputBlock): number {
   const c = block.content;
   if (c && typeof c === 'object' && !Array.isArray(c) && 'level' in c) {
     const level = Number((c as { level?: number }).level);
@@ -31,7 +38,7 @@ function headingLevel(block: DraftBlock): number {
   return 2;
 }
 
-function headingText(block: DraftBlock): string {
+function headingText(block: EditorInputBlock): string {
   if (block.heading?.trim()) return block.heading.trim();
   const c = block.content;
   if (typeof c === 'string') return c.trim();
@@ -240,12 +247,12 @@ export function blockHeadingLevel(block: DraftBlock): number {
   return headingLevel(block);
 }
 
-export function blockHeadingText(block: DraftBlock): string {
+export function blockHeadingText(block: EditorInputBlock): string {
   return headingText(block);
 }
 
 /** Load editorial blocks into editor HTML. */
-export function blocksToEditorHtml(blocks: DraftBlock[]): string {
+export function blocksToEditorHtml(blocks: EditorInputBlock[]): string {
   const parts: string[] = [];
   for (const b of blocks || []) {
     if (b.type === 'heading') {

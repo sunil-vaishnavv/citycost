@@ -21,6 +21,12 @@ import {
 } from '../observability/publish-confidence.js';
 import type { ConfidenceLevel } from '../observability/confidence-engine.js';
 import { countBodyInternalLinks } from '../validation/normalize-draft.js';
+import { getTopicById } from '../db/topics-repo.js';
+import { internalTitleLabels, toPublicTitle } from '../utils/clean-title.js';
+import { inspectPublicIntegrity } from '../writer/v2/public-integrity-gate.js';
+import { linkFloorForResearch, type LinkGeoScope, type LinkResearchLike } from '../writer/v2/link-relevance.js';
+import type { CalculationLedger } from '../research/comparison-ledger.js';
+import { groundingRequiredForArticles } from '../rag/grounding-policy.js';
 
 export interface PublishCheckItem {
   key: string;
@@ -89,11 +95,45 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
   const settings = await getSettings();
   const draft = asDraft(article);
   const manual = isManualArticle(article);
+  const research = (article.research_pack_json || null) as
+    | (LinkResearchLike & {
+        geo_scope?: LinkGeoScope;
+        calculation_ledger?: CalculationLedger | null;
+        research_status?: string;
+      })
+    | null;
   const contentValidation = manual
     ? validateManualDraft(draft, { minWords: 50, maxWords: settings.article_length_max })
-    : validateWriterDraft(draft, {
-        min: settings.article_length_min,
-        max: settings.article_length_max,
+    : validateWriterDraft(
+        draft,
+        {
+          min: settings.article_length_min,
+          max: settings.article_length_max,
+        },
+        null,
+        { min_internal_links: linkFloorForResearch(research) }
+      );
+
+  // Final public-content gate on the STORED draft — re-run on every readiness check, so a
+  // later revision / Fix Issues pass cannot publish content that skipped validation.
+  let internalLabels: string[] = [];
+  if (article.topic_id) {
+    try {
+      const topic = await getTopicById(Number(article.topic_id));
+      if (topic) internalLabels = internalTitleLabels(topic.title);
+    } catch {
+      /* topic lookup is best-effort */
+    }
+  }
+  const publicIntegrity = manual
+    ? null
+    : inspectPublicIntegrity(draft, {
+        articleTitle: toPublicTitle(article.seo_title || draft.seo_title || ''),
+        internalLabels,
+        scope: research?.geo_scope || null,
+        ledger: research?.calculation_ledger || null,
+        researchStatus: research?.research_status || null,
+        groundingRequired: groundingRequiredForArticles(),
       });
 
   const latest = await getLatestQualityReport(articleId);
@@ -218,6 +258,18 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
       label: 'Slug',
       passed: slugOk,
       detail: slugOk ? article.slug : 'Valid unique slug required',
+    },
+    {
+      key: 'public_integrity',
+      label: 'Public content integrity',
+      passed: manual ? true : Boolean(publicIntegrity?.ok),
+      detail: manual
+        ? 'Not applied to manual articles'
+        : publicIntegrity?.ok
+          ? publicIntegrity.warnings.length
+            ? `${publicIntegrity.warnings.length} warning(s): ${publicIntegrity.warnings.slice(0, 2).map((w) => w.message).join(' · ')}`
+            : 'No QA markers, broken sentences, TOC/link or figure conflicts'
+          : (publicIntegrity?.errors || []).slice(0, 4).map((e) => e.message).join(' · '),
     },
     {
       key: 'confidence',

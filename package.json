@@ -15,7 +15,9 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "type-check": "tsc --noEmit",
-    "test:editorial-jobs": "node --expose-gc --import tsx scripts/verify-editorial-job-memory.ts && tsx scripts/verify-editorial-jobs-ui.ts"
+    "test:editorial-jobs": "node --expose-gc --import tsx scripts/verify-editorial-job-memory.ts && tsx scripts/verify-editorial-jobs-ui.ts",
+    "test:editorial-quality": "tsx scripts/verify-grounding-policy.ts && tsx scripts/verify-rag-pipeline.ts && tsx scripts/verify-article-integrity.ts && tsx scripts/verify-editorial-e2e-mock.ts",
+    "verify:grounding-live": "tsx scripts/verify-rag-live.ts"
   },
   "dependencies": {
     "@google/genai": "^2.30.0",

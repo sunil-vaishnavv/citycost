@@ -9,6 +9,7 @@
  * as a soft cap on patch categories in one cycle — NOT as loop iterations.
  */
 
+import type { LinkGeoScope } from '../writer/v2/link-relevance.js';
 import {
   getArticleById,
   updateArticleDraft,
@@ -870,6 +871,7 @@ export async function runRevisionLoop(
         skipHeadingUniquify: cat !== 'STRUCTURE',
         linkCandidates: cat === 'SEO' ? linkCandidates : undefined,
         expandToMinWords: cat === 'STRUCTURE' ? minWords : undefined,
+        linkScope: (asResearch(current) as { geo_scope?: LinkGeoScope } | null)?.geo_scope || null,
       });
       lengthDraft = det.draft;
       lengthFixes.push(...det.fixes);

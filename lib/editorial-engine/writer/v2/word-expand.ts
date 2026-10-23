@@ -272,3 +272,79 @@ function deterministicArticlePad(
     content: paras.join(' '),
   };
 }
+
+/**
+ * Article-level AI expansion for the word floor: adds 1–2 NEW, specific
+ * paragraphs to the thinnest existing sections (one section per round), using
+ * the facts digest. Replaces generic filler as the first resort; the
+ * deterministic pad is only used if this still falls short.
+ */
+export async function expandArticleWithAi(input: {
+  draft: WriterDraftPayload;
+  minWords: number;
+  factsDigest: string;
+  guideId: string;
+  readerLabel: string;
+  complete: (system: string, user: string) => Promise<string>;
+  maxRounds?: number;
+}): Promise<{ draft: WriterDraftPayload; rounds: number; added: number }> {
+  let blocks = [...(input.draft.blocks || [])];
+  let words = countDraftWords({ ...input.draft, blocks });
+  const startWords = words;
+  let rounds = 0;
+  const maxRounds = input.maxRounds ?? 3;
+  const used = new Set<number>();
+
+  // Section spans: heading block index → [start, end) of its body.
+  const sections = () => {
+    const spans: Array<{ h: number; heading: string; start: number; end: number; words: number }> = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i]!;
+      if (b.type !== 'heading') continue;
+      let j = i + 1;
+      while (j < blocks.length && blocks[j]!.type !== 'heading' && blocks[j]!.type !== 'faq' && blocks[j]!.type !== 'summary') j++;
+      const heading = String(b.heading || (typeof b.content === 'string' ? b.content : '')).trim();
+      if (!heading) continue;
+      spans.push({ h: i, heading, start: i + 1, end: j, words: wordsInBlocks(blocks.slice(i + 1, j)) });
+    }
+    return spans;
+  };
+
+  while (words < input.minWords && rounds < maxRounds) {
+    const target = sections()
+      .filter((s) => !used.has(s.h))
+      .sort((a, b) => a.words - b.words)[0];
+    if (!target) break;
+    used.add(target.h);
+    rounds += 1;
+    const need = Math.min(260, input.minWords - words + 60);
+    const existing = blocks
+      .slice(target.start, target.end)
+      .map((b) => (typeof b.content === 'string' ? b.content : ''))
+      .join('\n')
+      .slice(0, 2500);
+    const system = sanitizePromptText(
+      [
+        `Add ${need}+ words of NEW, specific content to the "${target.heading}" section of a ${input.guideId} guide.`,
+        'Add practical detail the section does not already cover: a worked example, a cost breakdown, a decision rule, or a common mistake.',
+        'Only use numbers from FACTS. Do not repeat existing sentences. No headings, FAQ or summary.',
+        'Return JSON {"blocks":[{"type":"paragraph","content":"..."}]} with 1–2 paragraphs.',
+        `Reader=${input.readerLabel}.`,
+      ].join('\n')
+    ).text;
+    const user = sanitizePromptText(`FACTS=${input.factsDigest.slice(0, 3500)}\nSECTION_SO_FAR:\n${existing}`).text;
+    try {
+      const text = await input.complete(system, user);
+      const extra = sanitizeBlocks(parseBlocksFromAi(text))
+        .filter((b) => b.type === 'paragraph' && typeof b.content === 'string' && b.content.trim().length > 60)
+        .slice(0, 2)
+        .map((b) => ({ ...b, id: mintBlockId('exp') }));
+      if (!extra.length) continue;
+      blocks = [...blocks.slice(0, target.end), ...extra, ...blocks.slice(target.end)];
+      words = countDraftWords({ ...input.draft, blocks });
+    } catch {
+      /* try the next section */
+    }
+  }
+  return { draft: { ...input.draft, blocks }, rounds, added: words - startWords };
+}

@@ -4,6 +4,7 @@
  */
 
 import type { ResearchPack } from '../research-engine.js';
+import { ledgerFactLines, type CalculationLedger } from '../../research/comparison-ledger.js';
 
 /** Phrases that must never appear in prompts sent to the model. */
 export const PROMPT_PLANNING_BANS: Array<{ re: RegExp; repl: string }> = [
@@ -120,6 +121,11 @@ export function buildFactsDigest(facts: unknown): string {
 
   if (facts && typeof facts === 'object') {
     const pack = facts as Partial<ResearchPack> & Record<string, unknown>;
+
+    // Approved calculation ledger first — the single source for stated figures.
+    for (const line of ledgerFactLines(pack.calculation_ledger as CalculationLedger | null | undefined)) {
+      lines.push(line);
+    }
 
     if (typeof pack.primary_entity === 'string' && pack.primary_entity.trim()) {
       lines.push(`Place: ${pack.primary_entity.trim()}`);

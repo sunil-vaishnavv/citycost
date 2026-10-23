@@ -10,8 +10,17 @@
  *   reason. No benchmark/fallback figures or source URLs are ever synthesized.
  */
 
+import { randomBytes } from 'node:crypto';
 import { GoogleGenAI } from '@google/genai';
-import type { GroundedFact, GroundingSource, RagRetrievalResult } from './types.js';
+import { resolveGeminiApiKey } from './grounding-policy.js';
+import type {
+  GroundedFact,
+  GroundingSource,
+  GroundingTrace,
+  RagErrorCategory,
+  RagRetrievalResult,
+  RagRetrievalStatus,
+} from './types.js';
 
 const DEFAULT_RAG_MODEL = 'gemini-3.8-flash';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -28,7 +37,10 @@ export function getRagModel(): string {
 export interface GroundedModelResponse {
   text?: string;
   candidates?: Array<{
+    finishReason?: string;
     groundingMetadata?: {
+      webSearchQueries?: string[];
+      searchEntryPoint?: { renderedContent?: string };
       groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
       groundingSupports?: Array<{
         segment?: { startIndex?: number; endIndex?: number; partIndex?: number; text?: string };
@@ -36,6 +48,24 @@ export interface GroundedModelResponse {
       }>;
     };
   }>;
+  promptFeedback?: { blockReason?: string };
+}
+
+/** Map a provider error message to an actionable category (no message text is guessed). */
+export function classifyGroundingError(message: string): RagErrorCategory {
+  const m = message || '';
+  if (/API[_ ]key not valid|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|\b401\b|\b403\b/i.test(m)) return 'auth';
+  if (/quota|billing/i.test(m) && /exceed|exhaust|limit/i.test(m)) return 'quota_exhausted';
+  if (/\b429\b|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(m)) return 'rate_limited';
+  if (/\b404\b|NOT_FOUND|is not found|not supported|unsupported|does not support/i.test(m)) return 'unsupported_model';
+  if (/timed? ?out|ETIMEDOUT|deadline|aborted/i.test(m)) return 'timeout';
+  if (/ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|fetch failed|network/i.test(m)) return 'network';
+  if (/SAFETY|blocked|blockReason|RECITATION/i.test(m)) return 'blocked_request';
+  return 'unknown';
+}
+
+function newRequestId(): string {
+  return `grd_${Date.now().toString(36)}_${randomBytes(4).toString('hex')}`;
 }
 
 export type GroundedGenerateFn = (req: {
@@ -198,21 +228,14 @@ export function parseGroundedResponse(
 }
 
 function defaultGenerate(apiKey: string, timeoutMs: number): GroundedGenerateFn {
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      timeout: timeoutMs,
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: timeoutMs } });
   return async ({ model, prompt, signal }) => {
     const response = await ai.models.generateContent({
       model,
       contents: prompt,
       config: {
-        tools: [{ googleSearch: {} }],
+        // The grounding tool is attached to the request itself (not described in the prompt).
+        ...groundingRequestConfig(),
         abortSignal: signal,
       },
     });
@@ -220,9 +243,15 @@ function defaultGenerate(apiKey: string, timeoutMs: number): GroundedGenerateFn 
   };
 }
 
+/** Request config used for the provider call — exported so tests can assert the tool wiring. */
+export function groundingRequestConfig(): { tools: Array<{ googleSearch: Record<string, never> }> } {
+  return { tools: [{ googleSearch: {} }] };
+}
+
 /**
  * Executes Live Google Search Grounding retrieval for city cost inquiry.
- * Never throws for provider problems — returns status `unavailable` / `error` instead.
+ * Never throws for provider problems — returns status `unavailable` / `error` /
+ * `no_evidence` with an error_category and a redacted trace instead.
  */
 export async function retrieveGroundedCityCostData(params: {
   targetCity: string;
@@ -232,13 +261,17 @@ export async function retrieveGroundedCityCostData(params: {
   apiKey?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Include the raw grounded text + Search Suggestions for display to the requesting admin. */
+  includeDisplay?: boolean;
   /** Test seam: replaces the Gemini call. */
   generate?: GroundedGenerateFn;
 }): Promise<RagRetrievalResult> {
   const { targetCity, comparisonCity, topicTitle } = params;
-  const apiKey = params.apiKey || process.env.GEMINI_API_KEY;
+  const apiKey = resolveGeminiApiKey(params.apiKey);
   const model = getRagModel();
   const currentYear = new Date().getFullYear();
+  const requestId = newRequestId();
+  const startedAt = new Date();
 
   const primaryQuery = comparisonCity
     ? `average 1 bedroom apartment rent ${targetCity} vs ${comparisonCity} ${currentYear}`
@@ -252,12 +285,44 @@ export async function retrieveGroundedCityCostData(params: {
     facts: [] as GroundedFact[],
     factLines: [] as string[],
     unsupportedDropped: 0,
-    retrievalTimestamp: new Date().toISOString(),
+    retrievalTimestamp: startedAt.toISOString(),
     model,
   };
 
+  const trace = (
+    status: RagRetrievalStatus,
+    extra: Partial<GroundingTrace> = {}
+  ): GroundingTrace => {
+    const t: GroundingTrace = {
+      request_id: requestId,
+      provider: 'google-genai',
+      model,
+      tool: 'googleSearch',
+      started_at: startedAt.toISOString(),
+      latency_ms: Date.now() - startedAt.getTime(),
+      status,
+      web_search_queries: 0,
+      grounding_chunks: 0,
+      grounding_supports: 0,
+      sources: 0,
+      facts: 0,
+      unsupported_dropped: 0,
+      ...extra,
+    };
+    console.log(
+      `[rag] ${t.request_id} model=${t.model} status=${t.status}${t.error_category ? ` category=${t.error_category}` : ''} latency=${t.latency_ms}ms queries=${t.web_search_queries} chunks=${t.grounding_chunks} supports=${t.grounding_supports} facts=${t.facts}`
+    );
+    return t;
+  };
+
   if (!apiKey && !params.generate) {
-    return { ...base, status: 'unavailable', error: 'GEMINI_API_KEY is not configured — live grounding disabled.' };
+    return {
+      ...base,
+      status: 'unavailable',
+      error_category: 'missing_key',
+      error: 'GEMINI_API_KEY is not configured (or is a placeholder) — live grounding disabled.',
+      trace: trace('unavailable', { error_category: 'missing_key', latency_ms: 0 }),
+    };
   }
 
   const places = comparisonCity ? `${targetCity} and ${comparisonCity}` : targetCity;
@@ -270,29 +335,93 @@ Focus on:
 4. Typical grocery basket costs and dining out averages.
 5. Local taxation (income tax, sales tax/VAT) and median salary.
 
-Return a numbered list of 8-12 statements. Each statement must name the city it refers to, contain an exact number with currency or unit, and come from a search result. Omit any item you cannot source.`;
+Return a numbered list of 8-12 statements. Each statement must name the city it refers to, state the period or publication date when the source gives one, contain an exact number with currency or unit, and come from a search result. Omit any item you cannot source.`;
 
   try {
     const generate = params.generate || defaultGenerate(apiKey!, params.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const response = await generate({ model, prompt, signal: params.signal });
+    const candidate = response.candidates?.[0];
+    const meta = candidate?.groundingMetadata;
+    const finishReason = candidate?.finishReason;
+    const counts = {
+      finish_reason: finishReason,
+      web_search_queries: meta?.webSearchQueries?.length || 0,
+      grounding_chunks: meta?.groundingChunks?.length || 0,
+      grounding_supports: meta?.groundingSupports?.length || 0,
+    };
+    const display =
+      params.includeDisplay && response.text
+        ? {
+            text: response.text,
+            search_entry_point_html: meta?.searchEntryPoint?.renderedContent,
+            web_search_queries: meta?.webSearchQueries || [],
+          }
+        : undefined;
+
+    const blockReason = response.promptFeedback?.blockReason;
+    if (blockReason || (finishReason && /SAFETY|BLOCKLIST|PROHIBITED|RECITATION/i.test(finishReason))) {
+      return {
+        ...base,
+        status: 'error',
+        error_category: 'blocked_request',
+        error: `Provider blocked the grounded request (${blockReason || finishReason}).`,
+        trace: trace('error', { ...counts, error_category: 'blocked_request' }),
+      };
+    }
+
+    if (!meta || (!counts.grounding_chunks && !counts.grounding_supports)) {
+      return {
+        ...base,
+        status: 'no_evidence',
+        error_category: 'metadata_missing',
+        error: 'Response contained no grounding metadata — the answer is not search-grounded and was discarded.',
+        trace: trace('no_evidence', { ...counts, error_category: 'metadata_missing' }),
+        display,
+      };
+    }
+
     const { facts, sources, unsupportedDropped } = parseGroundedResponse(response, {
       targetCity,
       comparisonCity,
     });
     const factLines = facts.map((f) => `${f.citationRef} ${f.statement}`);
+    const resultCounts = {
+      ...counts,
+      sources: sources.length,
+      facts: facts.length,
+      unsupported_dropped: unsupportedDropped,
+    };
     if (!facts.length) {
       return {
         ...base,
         unsupportedDropped,
         status: 'no_evidence',
+        error_category: 'no_supported_claims',
         error: 'Grounding returned no source-backed figures for this location.',
+        trace: trace('no_evidence', { ...resultCounts, error_category: 'no_supported_claims' }),
+        display,
       };
     }
-    return { ...base, sources, facts, factLines, unsupportedDropped, status: 'live' };
+    return {
+      ...base,
+      sources,
+      facts,
+      factLines,
+      unsupportedDropped,
+      status: 'live',
+      trace: trace('live', resultCounts),
+      display,
+    };
   } catch (err) {
     if (params.signal?.aborted) throw err;
     const message = ((err as Error)?.message || String(err)).slice(0, 300);
-    console.warn(`⚠️ RAG grounding failed (model=${model}): ${message}`);
-    return { ...base, status: 'error', error: message };
+    const category = classifyGroundingError(message);
+    return {
+      ...base,
+      status: 'error',
+      error_category: category,
+      error: message,
+      trace: trace('error', { error_category: category }),
+    };
   }
 }

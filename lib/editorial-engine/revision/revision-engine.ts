@@ -3,6 +3,7 @@
  * Heading uniquify runs once AFTER AI merge via headingFingerprint.
  */
 
+import type { LinkGeoScope } from '../writer/v2/link-relevance.js';
 import { getSettings } from '../db/settings-repo.js';
 import type { QualityReport } from '../reviewer/quality-report.js';
 import type { RuleFinding } from '../reviewer/rule-validator.js';
@@ -39,7 +40,7 @@ import {
 
 function pickRevisionModel(writerModel: string): string {
   if (writerModel && !/test|dummy/i.test(writerModel)) return writerModel;
-  return 'llama-3.3-70b-versatile';
+  return 'openai/gpt-oss-120b';
 }
 
 function rulesFromReport(report: QualityReport): RuleFinding[] {
@@ -83,7 +84,8 @@ function applyPlanDeterministic(
   draft: WriterDraftPayload,
   plan: IssuePlan,
   linkCandidates: string[],
-  minWords: number
+  minWords: number,
+  linkScope?: LinkGeoScope | null
 ): { draft: WriterDraftPayload; fixes: string[]; categories: IssueCategory[] } {
   let next = draft;
   const fixes: string[] = [];
@@ -102,6 +104,7 @@ function applyPlanDeterministic(
       linkCandidates: cat === 'SEO' ? linkCandidates : undefined,
       expandToMinWords:
         cat === 'STRUCTURE' && needsExpand ? minWords : undefined,
+      linkScope,
     });
     next = det.draft;
     fixes.push(...det.fixes);
@@ -187,7 +190,13 @@ export async function reviseDraftOnce(input: {
   const wordsBefore = countDraftWords(draft);
 
   // Deterministic repairs for ALL planned categories in one batch
-  const detBatch = applyPlanDeterministic(draft, plan, linkCandidates, minWords);
+  const detBatch = applyPlanDeterministic(
+    draft,
+    plan,
+    linkCandidates,
+    minWords,
+    (input.research as { geo_scope?: LinkGeoScope } | null | undefined)?.geo_scope || null
+  );
   draft = detBatch.draft;
   const deterministic_fixes = [...normalized.fixes, ...detBatch.fixes];
   let used_ai = false;

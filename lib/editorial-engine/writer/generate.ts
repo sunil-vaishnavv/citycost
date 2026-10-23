@@ -17,7 +17,12 @@ import {
 import { insertDraftArticle, slugExists } from '../db/articles-repo.js';
 import type { DraftProgressEvent } from '../jobs/draft-job-types.js';
 import { getEditorialRuntime } from '../init.js';
-import { cleanEditorialSlug, cleanEditorialTitle } from '../utils/clean-title.js';
+import {
+  cleanEditorialSlug,
+  cleanEditorialTitle,
+  internalTitleLabels,
+  toPublicTitle,
+} from '../utils/clean-title.js';
 import { buildStructuredContext } from './context-pack.js';
 import { buildResearchPack, buildGroundedResearchPackAsync } from './research-engine.js';
 import { stripUntrustedGrounding } from '../research/rag-trust.js';
@@ -214,10 +219,14 @@ export async function generateArticleDraft(
     await emit({ type: 'stage', stage: 'loading_ai', message: `Loading AI (${settings.writer_model})…` });
 
     const aiStarted = Date.now();
+    // Public-content boundary: the writer never sees internal QA labels from the topic title.
+    const publicTitle = toPublicTitle(topic.title) || cleanEditorialTitle(topic.title);
+    const internalLabels = internalTitleLabels(topic.title);
     const v2 = await runWriterV2({
+      internalLabels,
       topic: {
         id: topic.id,
-        title: topic.title,
+        title: publicTitle,
         content_type: topic.content_type,
         persona: typeof refs.persona === 'string' ? refs.persona : null,
         primary_keyword:
@@ -334,11 +343,11 @@ export async function generateArticleDraft(
       draft = trimDraftToMaxWords(draft, settings.article_length_max);
     }
 
-    const cleanTopic = cleanEditorialTitle(topic.title);
+    const cleanTopic = toPublicTitle(topic.title) || cleanEditorialTitle(topic.title);
     draft = {
       ...draft,
-      seo_title: cleanEditorialTitle(draft.seo_title || cleanTopic).slice(0, 70),
-      meta_title: cleanEditorialTitle(draft.meta_title || draft.seo_title || cleanTopic).slice(0, 60),
+      seo_title: toPublicTitle(draft.seo_title || cleanTopic).slice(0, 70),
+      meta_title: toPublicTitle(draft.meta_title || draft.seo_title || cleanTopic).slice(0, 60),
       meta_description:
         draft.meta_description || `Cost of living guide: ${cleanTopic}`.slice(0, 160),
       excerpt: draft.excerpt || `Practical budgeting guidance for ${cleanTopic}.`.slice(0, 220),
@@ -347,8 +356,8 @@ export async function generateArticleDraft(
     await emit({ type: 'stage', stage: 'saving_draft', message: 'Saving draft…' });
 
     let slug =
-      cleanEditorialSlug(draft.seo_title || topic.title) ||
-      slugifyTitle(cleanEditorialTitle(draft.seo_title || topic.title));
+      cleanEditorialSlug(draft.seo_title || cleanTopic) ||
+      slugifyTitle(toPublicTitle(draft.seo_title || cleanTopic));
     if (!slug) slug = `draft-${topicId}-${Date.now()}`;
     if (await slugExists(slug)) {
       slug = `${slug}-${topicId}`;

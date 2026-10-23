@@ -6,11 +6,13 @@ import {
   buildCityPageData,
   buildComparePageData,
   buildCountryPageData,
-  listIndexableCities,
+  findCityBySlug,
   listIndexableComparisons,
   listIndexableCountries,
 } from '../../seo-catalog.js';
 import type { EditorialTopic } from '../types.js';
+import { toPublicTitle } from '../utils/clean-title.js';
+import { inferGeoFromText, type LinkGeoScope } from './v2/link-relevance.js';
 
 export interface StructuredContextPack {
   topic: {
@@ -30,6 +32,8 @@ export interface StructuredContextPack {
   tool_links: Array<{ href: string; label: string }>;
   known_facts: string[];
   data_gaps: string[];
+  /** Countries / city pages the article is about — drives internal-link relevance. */
+  geo: LinkGeoScope;
 }
 
 function asRefs(topic: EditorialTopic): Record<string, unknown> {
@@ -201,16 +205,45 @@ export function buildStructuredContext(topic: EditorialTopic): StructuredContext
   }
 
   if (typeof refs.hub_id === 'string') {
+    // Related links come from the topic's own geography below — never an arbitrary city sample.
     known_facts.push(`Topic is tied to category hub /${refs.hub_id}.`);
-    const sampleCities = listIndexableCities().slice(0, 8);
-    for (const c of sampleCities) {
-      related_cities.push({
-        slug: c.pageSlug,
-        label: `${c.city}, ${c.country}`,
-        href: `/city/${c.pageSlug}`,
-      });
+  }
+
+  // ── Geo scope: explicit refs + catalog entities named in the public title ──
+  const countryCodeBySlug = new Map(listIndexableCountries().map((c) => [c.slug, c]));
+  const geoCountries = new Set<string>();
+  const geoCities = new Set<string>();
+  const addCitySlug = (slug: unknown) => {
+    if (typeof slug !== 'string' || !slug) return;
+    const c = findCityBySlug(slug);
+    if (!c) return;
+    geoCities.add(c.pageSlug);
+    geoCountries.add(c.countryCode);
+  };
+  addCitySlug(refs.city_slug);
+  addCitySlug(refs.page_slug_a);
+  addCitySlug(refs.page_slug_b);
+  if (comparison && typeof comparison.slug === 'string') {
+    const hit = listIndexableComparisons().find((p) => p.slug === comparison!.slug);
+    if (hit) {
+      addCitySlug(hit.pageSlugA);
+      addCitySlug(hit.pageSlugB);
     }
   }
+  for (const slugKey of ['country_slug']) {
+    const v = refs[slugKey];
+    if (typeof v === 'string' && countryCodeBySlug.has(v)) geoCountries.add(countryCodeBySlug.get(v)!.code);
+  }
+  if (city && typeof city.countrySlug === 'string' && countryCodeBySlug.has(city.countrySlug)) {
+    geoCountries.add(countryCodeBySlug.get(city.countrySlug)!.code);
+  }
+  const inferred = inferGeoFromText(
+    [toPublicTitle(topic.title), ...(Array.isArray(refs.cities) ? refs.cities.map(String) : [])].join(' | ')
+  );
+  // Only trust title inference when refs did not already pin the geography.
+  if (!geoCities.size) for (const c of inferred.cities) geoCities.add(c.pageSlug);
+  if (!geoCountries.size || !refs.country_slug) for (const cc of inferred.country_codes) geoCountries.add(cc);
+  for (const c of inferred.cities) if (geoCities.has(c.pageSlug)) geoCountries.add(c.countryCode);
 
   // Deduplicate related lists
   const uniq = <T extends { href: string }>(items: T[]) => {
@@ -222,18 +255,27 @@ export function buildStructuredContext(topic: EditorialTopic): StructuredContext
     });
   };
 
-  if (!city && !country && !comparison && !refs.hub_id) {
+  // Related pages for the topic's own geography (replaces arbitrary first-N catalog lists).
+  for (const pageSlug of geoCities) {
+    const c = findCityBySlug(pageSlug);
+    if (c) related_cities.push({ slug: c.pageSlug, label: c.city, href: `/city/${c.pageSlug}` });
+  }
+  for (const code of geoCountries) {
+    const c = listIndexableCountries().find((x) => x.code === code);
+    if (c) related_countries.push({ slug: c.slug, label: c.name, href: `/country/${c.slug}` });
+  }
+  if (geoCities.size >= 2) {
+    const [a, b] = [...geoCities];
+    const pair = listIndexableComparisons().find(
+      (p) => (p.pageSlugA === a && p.pageSlugB === b) || (p.pageSlugA === b && p.pageSlugB === a)
+    );
+    if (pair) {
+      related_comparisons.unshift({ slug: pair.slug, label: `${pair.cityA} vs ${pair.cityB}`, href: `/compare/${pair.slug}` });
+    }
+  }
+
+  if (!city && !country && !comparison && !refs.hub_id && !geoCities.size && !geoCountries.size) {
     data_gaps.push('No city/country/comparison/hub refs on topic — write carefully with general COL framing only.');
-    for (const c of listIndexableCountries().slice(0, 5)) {
-      related_countries.push({ slug: c.slug, label: c.name, href: `/country/${c.slug}` });
-    }
-    for (const p of listIndexableComparisons().slice(0, 5)) {
-      related_comparisons.push({
-        slug: p.slug,
-        label: `${p.cityA} vs ${p.cityB}`,
-        href: `/compare/${p.slug}`,
-      });
-    }
   }
 
   return {
@@ -260,5 +302,6 @@ export function buildStructuredContext(topic: EditorialTopic): StructuredContext
     ],
     known_facts,
     data_gaps,
+    geo: { country_codes: [...geoCountries], city_page_slugs: [...geoCities] },
   };
 }

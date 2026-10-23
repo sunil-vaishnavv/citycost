@@ -172,14 +172,30 @@ function renderTable(content: unknown): string {
   return `<div class="blog-table-wrap"><table>${head}<tbody>${body}</tbody></table></div>`;
 }
 
+const HEADED_RENDER_TYPES = new Set(['paragraph', 'list', 'comparison', 'table', 'faq', 'summary', 'tip', 'warning']);
+const TOC_HEADING = /^(?:table of contents|contents)$/i;
+
+/** The stored TOC block (rendered once from real headings instead). */
+function isStoredTocBlock(block: DraftBlock): boolean {
+  return block.id === 'toc' || TOC_HEADING.test((block.heading || '').trim());
+}
+
+/**
+ * Section heading a block renders, or null. Shared by buildTocHtml and the
+ * renderer so every TOC anchor (#section-N) points at a real heading.
+ */
+function sectionHeadingLabel(block: DraftBlock): string | null {
+  if (isStoredTocBlock(block) || block.type === 'intro') return null;
+  if (block.type === 'heading') {
+    const label = blockHeadingText(block);
+    return label && !TOC_HEADING.test(label.trim()) ? label : null;
+  }
+  const heading = (block.heading || '').trim();
+  return heading && HEADED_RENDER_TYPES.has(block.type) ? heading : null;
+}
+
 export function buildTocHtml(blocks: DraftBlock[]): string {
-  const headings = blocks
-    .filter((b) => b.type === 'heading' || (b.heading && b.type !== 'intro'))
-    .map((b) => {
-      if (b.type === 'heading') return blockHeadingText(b);
-      return (b.heading || blockContentText(b)).trim();
-    })
-    .filter((h) => h && !/^table of contents|^contents$/i.test(h));
+  const headings = blocks.map(sectionHeadingLabel).filter((h): h is string => Boolean(h));
   if (!headings.length) return '';
   const items = headings
     .map((h, i) => {
@@ -200,19 +216,13 @@ export function renderArticleBlocksHtml(
   const parts: string[] = [];
 
   for (const block of blocks) {
-    const heading = (block.heading || '').trim();
-    const isToc =
-      /^table of contents|^contents$/i.test(heading) ||
-      (block.type === 'list' && /table of contents|contents/i.test(blockContentText(block)));
+    // Stored TOC is replaced by the generated one. (A list that merely mentions
+    // "contents", e.g. contents insurance, is ordinary content and must render.)
+    if (isStoredTocBlock(block)) continue;
 
-    if (isToc) {
-      // Prefer generated TOC once
-      continue;
-    }
-
+    const label = sectionHeadingLabel(block);
     if (block.type === 'heading') {
-      const label = blockHeadingText(block);
-      if (label && !/^table of contents/i.test(label)) {
+      if (label) {
         headingIndex += 1;
         const level = blockHeadingLevel(block);
         parts.push(
@@ -222,11 +232,9 @@ export function renderArticleBlocksHtml(
       continue;
     }
 
-    if (heading && ['paragraph', 'list', 'comparison', 'table', 'faq', 'summary', 'tip', 'warning'].includes(block.type) && heading) {
-      if (heading && !/^table of contents/i.test(heading)) {
-        headingIndex += 1;
-        parts.push(`<h2 id="section-${headingIndex}">${esc(heading)}</h2>`);
-      }
+    if (label) {
+      headingIndex += 1;
+      parts.push(`<h2 id="section-${headingIndex}">${esc(label)}</h2>`);
     }
 
     switch (block.type) {
@@ -267,8 +275,6 @@ export function renderArticleBlocksHtml(
         parts.push(
           `<section class="blog-faq"><h2>FAQ</h2>${renderFaq(block.content, links, used)}</section>`
         );
-        break;
-      case 'heading':
         break;
       default:
         parts.push(`<p>${renderInlineWithLinks(blockContentText(block), links, used)}</p>`);

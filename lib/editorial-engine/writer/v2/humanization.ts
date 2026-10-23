@@ -7,7 +7,25 @@
 import type { EditorialPlan, GuideId, WriterDraftPayload } from './types.js';
 import { sanitizePromptText } from './prompt-sanitizer.js';
 import { draftBodyText } from '../../reviewer/text-utils.js';
-import { sanitizeBlocks } from '../draft-validate.js';
+import { countDraftWords, sanitizeBlocks } from '../draft-validate.js';
+
+/**
+ * An AI rewrite may restyle the body but must not drop content. Rewrites that
+ * lose more than 15% of body words (condensing, or the model only seeing a
+ * truncated prompt) are rejected and the deterministic version is kept.
+ */
+export const MIN_REWRITE_WORD_RETENTION = 0.85;
+
+export function bodyRewriteKeepsContent(
+  before: WriterDraftPayload['blocks'],
+  after: WriterDraftPayload['blocks']
+): { ok: boolean; before: number; after: number } {
+  const count = (blocks: WriterDraftPayload['blocks']) =>
+    countDraftWords({ seo_title: '', meta_title: '', meta_description: '', excerpt: '', blocks });
+  const b = count(before);
+  const a = count(after);
+  return { ok: b === 0 || a >= b * MIN_REWRITE_WORD_RETENTION, before: b, after: a };
+}
 import {
   ensureDraftIntegrity,
   isProtectedBlock,
@@ -157,6 +175,13 @@ export async function humanizeWithAi(input: {
     const parsed = JSON.parse(text.slice(start, end + 1)) as WriterDraftPayload;
     if (!Array.isArray(parsed.blocks) || parsed.blocks.length < 3) return base;
     const newBody = sanitizeBlocks(parsed.blocks).filter((b) => !isProtectedBlock(b));
+    const kept = bodyRewriteKeepsContent(body, newBody);
+    if (!kept.ok) {
+      console.warn(
+        `[writer-v2] humanize pass ${input.pass} rejected: body ${kept.before} → ${kept.after} words (would drop content)`
+      );
+      return base;
+    }
     const merged = mergeWithProtected(newBody, snap);
     const ensured = ensureDraftIntegrity({ ...base, blocks: merged }, snap);
     // Always re-run deterministic blacklist after AI humanize

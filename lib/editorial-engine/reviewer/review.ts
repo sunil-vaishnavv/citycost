@@ -249,7 +249,7 @@ export async function reviewArticle(
       reviewModel = fast
         ? /8b-instant|flash|mini|haiku/i.test(settings.reviewer_model)
           ? settings.reviewer_model
-          : 'llama-3.1-8b-instant'
+          : 'openai/gpt-oss-20b'
         : settings.reviewer_model;
       const aiResult = await getAiRouter().complete({
         model: reviewModel,

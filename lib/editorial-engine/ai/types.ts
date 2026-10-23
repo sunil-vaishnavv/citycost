@@ -80,6 +80,8 @@ export interface ProviderRuntimeConfig {
   last_error: string | null;
   avg_latency_ms: number | null;
   avg_cost_usd: number | null;
+  /** Model failover settings + last automatic switch (stored in meta_json). */
+  meta?: import('./model-catalog.js').ProviderModelMeta;
 }
 
 export interface RouterCompleteInput {

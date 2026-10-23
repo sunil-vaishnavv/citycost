@@ -270,7 +270,7 @@ export function deriveArticleWorkflow(input: {
   readiness: PublishReadiness | null;
   hasResearch: boolean;
   topicId?: number | null;
-  busy?: 'research' | 'draft' | 'seo' | 'review' | 'revise' | 'publish' | 'unpublish' | 'export' | null;
+  busy?: 'research' | 'draft' | 'seo' | 'review' | 'revise' | 'publish' | 'unpublish' | 'update' | 'export' | null;
   /** UI override after Continue to Review when SEO package already exists */
   forceStage?: WizardStepKey | null;
 }): WorkflowState {
