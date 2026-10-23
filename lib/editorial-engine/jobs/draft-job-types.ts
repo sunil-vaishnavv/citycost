@@ -197,9 +197,26 @@ export function sumRemainingEta(fromStage: DraftJobStage): number {
 export function applyStage(
   progress: DraftJobProgress,
   stage: DraftJobStage,
-  opts?: { detail?: string; log?: string; section_detail?: string }
+  opts?: { detail?: string; log?: string; section_detail?: string; failed_stage?: DraftJobStage }
 ): DraftJobProgress {
+  const isFailed = stage === 'failed';
+  const targetFailedStage = opts?.failed_stage || progress.failed_stage || progress.stage;
+  const failedOrder = isFailed ? DRAFT_JOB_STAGES.indexOf(targetFailedStage) : -1;
+
   const stages = progress.stages.map((s) => {
+    if (isFailed) {
+      const order = DRAFT_JOB_STAGES.indexOf(s.id);
+      if (s.id === targetFailedStage) {
+        return { ...s, status: 'failed' as const, detail: opts?.detail };
+      }
+      if (order < failedOrder && s.status !== 'skipped') {
+        return { ...s, status: 'done' as const };
+      }
+      if (order > failedOrder) {
+        return { ...s, status: 'skipped' as const };
+      }
+      return s;
+    }
     if (s.id === stage) return { ...s, status: 'active' as const, detail: opts?.detail };
     const order = DRAFT_JOB_STAGES.indexOf(s.id);
     const cur = DRAFT_JOB_STAGES.indexOf(stage);

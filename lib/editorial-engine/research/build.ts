@@ -391,6 +391,7 @@ export function assembleResearchPack(
     grounding_sources: groundedRag?.status === 'live' ? groundedRag.sources : undefined,
     grounded_facts: groundedRag?.status === 'live' ? groundedRag.facts : undefined,
     rag_status: groundedRag?.status,
+    rag_error_category: groundedRag && groundedRag.status !== 'live' ? groundedRag.error_category : undefined,
     rag_error: groundedRag && groundedRag.status !== 'live' ? groundedRag.error : undefined,
     rag_model: groundedRag?.model,
     research_status: groundedRag ? researchStatusFor(groundedRag) : undefined,

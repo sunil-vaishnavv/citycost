@@ -158,6 +158,7 @@ export interface ResearchPack {
   rag_accuracy_score?: number;
   /** Outcome of live grounding for this pack (live | no_evidence | unavailable | error). */
   rag_status?: string;
+  rag_error_category?: string;
   rag_error?: string;
   rag_model?: string;
   /** Countries / city pages the article is about — drives internal-link relevance. */

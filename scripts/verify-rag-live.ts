@@ -57,9 +57,10 @@ async function main() {
   step(1, 'Topic reached provider', 'PASS', `request_id=${t.request_id}`);
   step(2, 'Request used googleSearch tool', 'PASS', `tool=${t.tool}`);
   if (result.status === 'error' || result.status === 'unavailable') {
-    step(3, 'API call succeeded', 'FAIL', `${result.error_category}: ${result.error}`);
-    console.log('\nRESULT: FAIL');
-    process.exit(1);
+    const isBlocked = result.error_category === 'quota_exhausted' || result.error_category === 'missing_key';
+    step(3, 'API call succeeded', isBlocked ? 'BLOCKED' : 'FAIL', `${result.error_category}: ${result.error}`);
+    console.log(`\nRESULT: ${isBlocked ? 'BLOCKED' : 'FAIL'} (${result.error_category})`);
+    process.exit(isBlocked ? 2 : 1);
   }
   step(3, 'API call succeeded', 'PASS', `${t.latency_ms}ms finish=${t.finish_reason || 'n/a'}`);
   const hasMeta = t.grounding_chunks > 0 || t.grounding_supports > 0;

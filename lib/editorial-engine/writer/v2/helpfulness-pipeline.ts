@@ -31,6 +31,11 @@ import {
   type HelpfulnessValidatorResult,
 } from './helpfulness-validators.js';
 
+export {
+  runHelpfulnessValidators,
+  type HelpfulnessValidatorResult,
+};
+
 export interface HelpfulnessContext {
   guideId: GuideId;
   country?: string;

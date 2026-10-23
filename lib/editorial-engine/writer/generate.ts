@@ -197,15 +197,55 @@ export async function generateArticleDraft(
       });
       research = await buildGroundedResearchPackAsync(topic, context, undefined, options.signal);
     }
+    const groundingStatusMsg = (() => {
+      if (research.grounding_sources?.length) {
+        return `Research grounded with ${research.grounding_sources.length} live sources`;
+      }
+      const st = research.rag_status;
+      const cat = research.rag_error_category;
+      if (st === 'blocked') {
+        return `Research loaded without live grounding (blocked${cat ? `: ${cat}` : ''})`;
+      }
+      if (st === 'error') {
+        return `Research loaded without live grounding (error${cat ? `: ${cat}` : ''})`;
+      }
+      if (st === 'no_evidence') {
+        return `Research loaded without live grounding (no evidence${cat ? `: ${cat}` : ''})`;
+      }
+      if (st === 'unavailable') {
+        return `Research loaded without live grounding (unavailable${cat ? `: ${cat}` : ''})`;
+      }
+      return 'Research loaded';
+    })();
+
+    if (!research.grounding_sources?.length && research.rag_status) {
+      const cat = research.rag_error_category;
+      let logMsg = '';
+      if (research.rag_status === 'blocked') {
+        logMsg = `Grounding policy: live Google Search grounding blocked (${research.rag_error || 'Terms require written permission for article storage'}). Using CityCost internal authoritative dataset.`;
+      } else if (cat === 'quota_exhausted') {
+        logMsg = `Grounding unavailable: upstream Gemini API quota exhausted (429 RESOURCE_EXHAUSTED). Using CityCost internal authoritative dataset.`;
+      } else if (cat === 'auth' || cat === 'missing_key') {
+        logMsg = `Grounding unavailable: Gemini API credentials invalid or missing. Using CityCost internal authoritative dataset.`;
+      } else if (cat === 'unsupported_model') {
+        logMsg = `Grounding unavailable: Gemini model ${research.rag_model || ''} does not support search grounding. Using CityCost internal authoritative dataset.`;
+      } else if (research.rag_status === 'no_evidence') {
+        logMsg = `Grounding response returned without usable evidence (${cat || 'no supported claims'}). Using CityCost internal authoritative dataset.`;
+      } else {
+        logMsg = `Grounding not active (${research.rag_status}${cat ? `:${cat}` : ''}). Using CityCost internal authoritative dataset.`;
+      }
+      await emit({
+        type: 'log',
+        checkpoint: 'research',
+        message: logMsg,
+      });
+    }
+
     await emit({
       type: 'checkpoint',
       checkpoint: 'research',
       stage: 'preparing_research',
-      message: research.grounding_sources?.length
-        ? `Research grounded with ${research.grounding_sources.length} live sources`
-        : research.rag_status && research.rag_status !== 'live'
-          ? `Research loaded without live grounding (${research.rag_status})`
-          : 'Research loaded',
+      message: groundingStatusMsg,
     });
 
     debug.groq_model = settings.writer_model;

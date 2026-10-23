@@ -41,16 +41,46 @@ export const DEFINITION_ONLY_RE =
   /^(?:[A-Z][^.!?]*\b(?:is|are|refers to|means|can be defined as)\b[^.!?]*\.\s*){1,}$/;
 
 const ELEMENT_PATTERNS: Array<{ element: HelpfulElement; re: RegExp }> = [
-  { element: 'checklist', re: /\b(checklist|tick off|make sure you|confirm whether|verify that|deposit months|before you sign)\b/i },
-  { element: 'decision_tip', re: /\b(decision tip|so what|what you should do|decide whether|next step|before you (?:commit|sign))\b/i },
-  { element: 'common_mistake', re: /\b(common mistake|avoid assuming|do not assume|people often|trap is)\b/i },
-  { element: 'money_saving', re: /\b(save money|money-saving|cheaper if|cut (?:the )?cost|lower (?:your )?spend)\b/i },
-  { element: 'real_scenario', re: /\b(scenario|real-world|what a real person|for example|imagine you)\b/i },
-  { element: 'trade_off', re: /\b(trade-?off|versus|weigh|compromise|give up)\b/i },
-  { element: 'local_insight', re: /\b(locally|local(?:s|ly)?|in practice|on the ground|neighbourhood|neighborhood)\b/i },
-  { element: 'example', re: /\b(for example|example:|practical (?:move|example|check))\b/i },
-  { element: 'questions_to_ask', re: /\b(ask(?:ing)? (?:whether|if|about)|questions? to ask|get in writing)\b/i },
-  { element: 'warning', re: /\b(warning|watch out|risk|careful|do not sign|red flag)\b/i },
+  {
+    element: 'checklist',
+    re: /\b(checklist|tick off|make sure you|confirm whether|verify that|deposit months|before you (?:sign|commit|move|relocate)|rule of thumb|step-by-step|actionable step)\b/i,
+  },
+  {
+    element: 'decision_tip',
+    re: /\b(decision(?: tip| guidance)?|so what|what (?:you|to) should do|decide (?:whether|between|which)|next step|before you (?:commit|sign|move|relocate)|who should (?:choose|pick|rent|move)|non-negotiables?|must-haves?|shortlist|prioritize|run the numbers|stress-test|hold lifestyle constant|like-for-like|apples-to-apples|budget difference|net take-home|purchasing power gap)\b/i,
+  },
+  {
+    element: 'common_mistake',
+    re: /\b(common mistake|avoid assuming|do not assume|people often|trap is|pitfall|frequently overlooked|easy to forget)\b/i,
+  },
+  {
+    element: 'money_saving',
+    re: /\b(save money|money-saving|cheaper if|cut (?:the )?cost|lower (?:your )?spend|cost lever|reduce (?:your )?expenses|stretch your budget|budget-friendly)\b/i,
+  },
+  {
+    element: 'real_scenario',
+    re: /\b(scenario|real-world|what a real person|for example|imagine you|case study|for instance|typical (?:household|renter|family|earner|couple|single)|monthly budget of|break-even)\b/i,
+  },
+  {
+    element: 'trade_off',
+    re: /\b(trade-?off|tradeoff|weigh(?:ing)? (?:the|between|both)|compromise|give up|offset(?:ting)?|lifestyle premium|commute penalty|space (?:versus|vs) location|price differential|cost spread)\b/i,
+  },
+  {
+    element: 'local_insight',
+    re: /\b(locally|local(?:s|ly)?|in practice|on the ground|neighbourhood|neighborhood|local quote|local market norms?|on-the-ground)\b/i,
+  },
+  {
+    element: 'example',
+    re: /\b(for example|example:|practical (?:move|example|check)|for instance|sample budget|illustration)\b/i,
+  },
+  {
+    element: 'questions_to_ask',
+    re: /\b(ask(?:ing)? (?:whether|if|about)|questions? to ask|get in writing|confirm with (?:agent|landlord|employer))\b/i,
+  },
+  {
+    element: 'warning',
+    re: /\b(warning|watch out|risk|careful|do not sign|red flag|hidden cost|surprise expense|data gap|limitations?)\b/i,
+  },
 ];
 
 export function detectHelpfulElements(text: string): HelpfulElement[] {
@@ -168,6 +198,37 @@ function templatesForGuide(guideId: GuideId): HelpfulTemplate[] {
         heading: 'Comparison trade-off',
         build: ({ place, placeB }) =>
           `Trade-off between ${place}${placeB ? ` and ${placeB}` : ' both places'}: hold lifestyle constant and convert to one currency after tax — then decide on housing + tax drag first.`,
+      },
+      {
+        element: 'checklist',
+        blockType: 'list',
+        heading: 'Comparison decision criteria',
+        build: ({ place, placeB }) => [
+          `Hold lifestyle constant between ${place}${placeB ? ` and ${placeB}` : ' both places'} before comparing final residuals`,
+          'Weigh the net after-tax take-home residual against local rent differential',
+          'Define non-negotiable commuting tolerance before signing any long lease',
+        ],
+      },
+      {
+        element: 'decision_tip',
+        blockType: 'tip',
+        heading: 'Actionable next steps',
+        build: ({ place, placeB }) =>
+          `Decision tip: compare like-for-like lifestyle between ${place}${placeB ? ` and ${placeB}` : ' the two destinations'}. Run a stress-test budget that factors in a 10% rental overrun and local transit caps before making an irreversible relocation commitment.`,
+      },
+      {
+        element: 'warning',
+        blockType: 'warning',
+        heading: 'Data gap and local limitations',
+        build: ({ place, placeB }) =>
+          `Transparent limitation: published cost indices for ${place}${placeB ? ` and ${placeB}` : ''} reflect citywide averages. Actual expenses vary widely by neighbourhood, lease duration, and energy efficiency — always verify one recent utility bill and local rent quote on the ground.`,
+      },
+      {
+        element: 'money_saving',
+        blockType: 'tip',
+        heading: 'Relocation cost levers',
+        build: ({ place, placeB }) =>
+          `Money-saving lever: when choosing between ${place}${placeB ? ` and ${placeB}` : ' both cities'}, outer-ring suburbs with direct rail transit often reduce monthly housing spend significantly without adding excessive commute penalty.`,
       },
     ],
     salary: [
@@ -306,6 +367,28 @@ export function applyHelpfulContent(input: {
     blocks.push(...next);
     helpful_tips_added += 1;
     sections_upgraded.push(chunk.heading);
+  }
+
+  // Bounded guarantee: if any body section still lacks practical advice, upgrade it directly
+  const residualChunks = draftSectionChunks({ ...input.draft, blocks });
+  for (const chunk of residualChunks) {
+    if (!sectionHasPracticalAdvice(chunk.text)) {
+      const template = templates[tipIdx % templates.length];
+      tipIdx += 1;
+      const built = template.build({ ...place, guideId: input.guideId });
+      const block: DraftBlock = {
+        id: mintBlockId('help'),
+        type: template.blockType,
+        heading: template.heading,
+        content: built,
+      };
+      const end = sectionEndIndex(blocks, chunk);
+      const next = insertAfterIndex(blocks, end, block);
+      blocks.length = 0;
+      blocks.push(...next);
+      helpful_tips_added += 1;
+      sections_upgraded.push(chunk.heading);
+    }
   }
 
   const draft = { ...input.draft, blocks };

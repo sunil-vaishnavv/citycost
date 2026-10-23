@@ -139,7 +139,8 @@ async function main() {
   await test('provider errors are classified honestly (model, rate limit, quota, auth, timeout)', async () => {
     const cases: Array<[string, string]> = [
       ['404 models/gemini-x is not found for API version v1beta', 'unsupported_model'],
-      ['[429 Too Many Requests] RESOURCE_EXHAUSTED', 'rate_limited'],
+      ['[429 Too Many Requests] RESOURCE_EXHAUSTED', 'quota_exhausted'],
+      ['429 Too Many Requests - please slow down', 'rate_limited'],
       ['Quota exceeded for quota metric generate_requests', 'quota_exhausted'],
       ['API key not valid. Please pass a valid API key.', 'auth'],
       ['Request timed out after 30000ms', 'timeout'],
