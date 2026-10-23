@@ -53,7 +53,9 @@ import {
 import {
   formatHelpfulnessDebug,
   runHelpfulnessPipeline,
+  runHelpfulnessValidators,
 } from './helpfulness-pipeline.js';
+import { applyHelpfulContent } from './helpful-content.js';
 import {
   formatLinkEngineDebug,
   runInternalLinkEngine,
@@ -972,7 +974,7 @@ export async function runWriterV2(input: {
       .map((l) => l.trim())
       .filter((l) => l.length > 20)
       .slice(0, 8);
-    const help = runHelpfulnessPipeline({
+    let help = runHelpfulnessPipeline({
       draft,
       context: {
         guideId: plan.guide_id,
@@ -982,6 +984,46 @@ export async function runWriterV2(input: {
         known_facts: knownFacts,
       },
     });
+
+    // Targeted bounded repair if helpfulness blocked
+    if (help.block_save) {
+      await emit({
+        type: 'log',
+        stage: 'quality_audit',
+        message: `Helpfulness check flagged missing advice (${help.report.block_reasons.join(', ')}) — running targeted repair…`,
+      });
+      const repairResult = applyHelpfulContent({
+        draft: help.draft,
+        guideId: plan.guide_id,
+        entities: {
+          country: plan.entities.country,
+          city: plan.entities.city,
+          city_b: plan.entities.city_b,
+        },
+      });
+      const revalidated = runHelpfulnessValidators(repairResult.draft, plan.guide_id);
+      if (!revalidated.block_save) {
+        help = {
+          ...help,
+          draft: repairResult.draft,
+          block_save: false,
+          report: {
+            ...help.report,
+            helpful_tips_added: help.report.helpful_tips_added + repairResult.report.helpful_tips_added,
+            sections_upgraded: [...new Set([...help.report.sections_upgraded, ...repairResult.report.sections_upgraded])],
+            block_save: false,
+            block_reasons: [],
+            helpful_score_after: repairResult.report.helpful_score_after,
+          },
+        };
+        await emit({
+          type: 'log',
+          stage: 'quality_audit',
+          message: `Helpfulness repair succeeded: added ${repairResult.report.helpful_tips_added} targeted advice items.`,
+        });
+      }
+    }
+
     {
       const helpInt = applyBlockIntegrity(
         help.draft,
@@ -1119,10 +1161,16 @@ export async function runWriterV2(input: {
       meta: qualityGatesDebug,
       latency_ms: Date.now() - gatesStarted,
     });
+    const qualityGatePassed = gates.report.ok && !help.block_save && linkEngine.report.ok;
+    const combinedGateBlocks = [
+      ...gates.report.block_reasons,
+      ...(help.block_save ? help.report.block_reasons.map((r) => `helpfulness:${r}`) : []),
+      ...(!linkEngine.report.ok ? ['missing_internal_links'] : []),
+    ];
     await emit({
       type: 'log',
       stage: 'quality_audit',
-      message: `Quality gates ${gates.report.ok ? 'PASS' : `FAIL: ${gates.report.block_reasons.join(', ')}`}`,
+      message: `Quality gates ${qualityGatePassed ? 'PASS' : `FAIL: ${combinedGateBlocks.join(', ')}`}`,
     });
 
     // Word floor — expand deterministically when post-gate draft is still short.
@@ -1181,10 +1229,16 @@ export async function runWriterV2(input: {
       kind: 'audit',
       meta: `${audit.ok ? 'pass' : `fail:${audit.critical.slice(0, 4).join('|')}`};${structuralPresenceMeta(draft)};words=${countDraftWords(draft)}`,
     });
+    const auditPassed = audit.ok && !help.block_save && !cq.block_save && gates.report.ok;
+    const combinedAuditIssues = [
+      ...audit.critical,
+      ...(help.block_save ? help.report.block_reasons.map((r) => `helpfulness:${r}`) : []),
+      ...(cq.block_save ? cq.report.block_reasons.map((r) => `content_quality:${r}`) : []),
+    ];
     await emit({
       type: 'metrics',
       metrics: { audit_ms: Date.now() - auditStarted },
-      message: audit.ok ? 'Quality audit passed' : `Quality audit: ${audit.critical.slice(0, 4).join('; ')}`,
+      message: auditPassed ? 'Quality audit passed' : `Quality audit: ${combinedAuditIssues.slice(0, 4).join('; ')}`,
     });
 
     // Normalize before save / final audit — Draft Integrity Report in debug
@@ -1246,7 +1300,8 @@ export async function runWriterV2(input: {
 
     const words = countDraftWords(draft);
 
-    // Re-audit after integrity normalize
+    // Re-audit after integrity normalize — fresh evaluation on final draft
+    const finalHelp = runHelpfulnessValidators(draft, plan.guide_id);
     const finalAudit = runQualityAudit({
       draft,
       plan,
@@ -1260,7 +1315,7 @@ export async function runWriterV2(input: {
       !finalAudit.ok ||
       integrityReport.integrity === 'FAIL' ||
       cq.block_save ||
-      help.block_save ||
+      finalHelp.block_save ||
       !linkEngine.report.ok ||
       !linkAfterGates.report.ok ||
       gates.report.block_save ||
@@ -1283,8 +1338,8 @@ export async function runWriterV2(input: {
       const cqErrors = cq.block_save
         ? cq.report.block_reasons.map((r) => `content_quality:${r}`)
         : [];
-      const helpErrors = help.block_save
-        ? help.report.block_reasons.map((r) => `helpfulness:${r}`)
+      const helpErrors = finalHelp.block_save
+        ? finalHelp.block_reasons.map((r) => `helpfulness:${r}`)
         : [];
       const linkErrors =
         !linkEngine.report.ok || !linkAfterGates.report.ok

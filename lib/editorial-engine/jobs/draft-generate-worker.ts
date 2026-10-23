@@ -21,6 +21,7 @@ import {
   applyStage,
   createInitialProgress,
   DRAFT_GENERATE_JOB_TYPE,
+  DRAFT_JOB_STAGES,
   type DraftJobPayload,
   type DraftJobProgress,
   type DraftJobStage,
@@ -253,7 +254,12 @@ async function executeDraftJob(jobId: number): Promise<void> {
         typeof result.debug?.error_category === 'string'
           ? result.debug.error_category
           : undefined;
-      progress = applyStage(progress, 'failed', { log: failureReason });
+      progress = applyStage(progress, 'failed', {
+        log: failureReason,
+        failed_stage: failedStage,
+        detail: failureReason.slice(0, 240),
+      });
+      const failedOrder = DRAFT_JOB_STAGES.indexOf(failedStage);
       progress = {
         ...progress,
         stage: 'failed',
@@ -262,11 +268,19 @@ async function executeDraftJob(jobId: number): Promise<void> {
         failed_stage: failedStage,
         failure_reason: failureReason,
         error_category: errorCategory,
-        stages: progress.stages.map((s) =>
-          s.id === failedStage || s.status === 'active'
-            ? { ...s, status: 'failed' as const, detail: failureReason.slice(0, 240) }
-            : s
-        ),
+        stages: progress.stages.map((s) => {
+          const order = DRAFT_JOB_STAGES.indexOf(s.id);
+          if (s.id === failedStage) {
+            return { ...s, status: 'failed' as const, detail: failureReason.slice(0, 240) };
+          }
+          if (order > failedOrder) {
+            return { ...s, status: 'skipped' as const };
+          }
+          if (order < failedOrder && s.status !== 'skipped') {
+            return { ...s, status: 'done' as const };
+          }
+          return s;
+        }),
         metrics: {
           ...progress.metrics,
           total_ms: Date.now() - started,
@@ -326,8 +340,13 @@ async function executeDraftJob(jobId: number): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     const cancelled = /cancel/i.test(message);
     const failedStage = (progress.stage || 'loading_ai') as DraftJobStage;
+    const failedOrder = DRAFT_JOB_STAGES.indexOf(failedStage);
     progress = appendLog(
-      applyStage(progress, 'failed', { log: message }),
+      applyStage(progress, 'failed', {
+        log: message,
+        failed_stage: failedStage,
+        detail: message.slice(0, 240),
+      }),
       message,
       'error'
     );
@@ -338,11 +357,19 @@ async function executeDraftJob(jobId: number): Promise<void> {
       progress_pct: 100,
       failed_stage: failedStage,
       failure_reason: message,
-      stages: progress.stages.map((s) =>
-        s.id === failedStage || s.status === 'active'
-          ? { ...s, status: 'failed' as const, detail: message.slice(0, 240) }
-          : s
-      ),
+      stages: progress.stages.map((s) => {
+        const order = DRAFT_JOB_STAGES.indexOf(s.id);
+        if (s.id === failedStage) {
+          return { ...s, status: 'failed' as const, detail: message.slice(0, 240) };
+        }
+        if (order > failedOrder) {
+          return { ...s, status: 'skipped' as const };
+        }
+        if (order < failedOrder && s.status !== 'skipped') {
+          return { ...s, status: 'done' as const };
+        }
+        return s;
+      }),
       metrics: {
         ...progress.metrics,
         total_ms: Date.now() - started,

@@ -55,8 +55,8 @@ export interface GroundedModelResponse {
 export function classifyGroundingError(message: string): RagErrorCategory {
   const m = message || '';
   if (/API[_ ]key not valid|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|\b401\b|\b403\b/i.test(m)) return 'auth';
-  if (/quota|billing/i.test(m) && /exceed|exhaust|limit/i.test(m)) return 'quota_exhausted';
-  if (/\b429\b|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(m)) return 'rate_limited';
+  if (/RESOURCE_EXHAUSTED/i.test(m) || (/quota|billing/i.test(m) && /exceed|exhaust|limit|check|\b429\b/i.test(m))) return 'quota_exhausted';
+  if (/\b429\b|rate.?limit|too many requests/i.test(m)) return 'rate_limited';
   if (/\b404\b|NOT_FOUND|is not found|not supported|unsupported|does not support/i.test(m)) return 'unsupported_model';
   if (/timed? ?out|ETIMEDOUT|deadline|aborted/i.test(m)) return 'timeout';
   if (/ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|fetch failed|network/i.test(m)) return 'network';

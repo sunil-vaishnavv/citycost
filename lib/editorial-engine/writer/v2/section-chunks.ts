@@ -52,7 +52,8 @@ export function chunkBodySections(blocks: DraftBlock[]): SectionChunk[] {
     }
 
     const t = blockPlain(b);
-    current.text += ` ${t}`;
+    const label = b.heading ? `${b.heading}: ` : '';
+    current.text += ` ${label}${t}`;
     current.ids.push(b.id);
     current.bodyIds.push(b.id);
     current.endIndex = i;
