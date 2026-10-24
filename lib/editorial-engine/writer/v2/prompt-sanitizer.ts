@@ -5,6 +5,7 @@
 
 import type { ResearchPack } from '../research-engine.js';
 import { ledgerFactLines, type CalculationLedger } from '../../research/comparison-ledger.js';
+import { isRealSourcesEnabled } from '../../sources/index.js';
 
 /** Phrases that must never appear in prompts sent to the model. */
 /**
@@ -183,11 +184,19 @@ export function buildFactsDigest(facts: unknown): string {
       }
     }
 
-    const sources = pack.grounding_sources as Array<{ id: number; title: string; domain: string }> | undefined;
+    const sources = pack.grounding_sources as Array<{ id: number; title: string; url?: string; domain: string }> | undefined;
     if (Array.isArray(sources) && sources.length > 0) {
-      lines.push('Grounding Sources (cite figures using inline [^1], [^2] footnotes):');
-      for (const s of sources.slice(0, 8)) {
-        lines.push(`[^${s.id}] ${s.title} (${s.domain})`);
+      if (isRealSourcesEnabled()) {
+        lines.push('VERIFIED REAL-WORLD SOURCES (cite figures using inline [Source Name](URL) markdown links):');
+        for (const s of sources.slice(0, 8)) {
+          const targetUrl = s.url || `https://${s.domain}`;
+          lines.push(`- [${s.title}](${targetUrl})`);
+        }
+      } else {
+        lines.push('Grounding Sources (cite figures using inline [^1], [^2] footnotes):');
+        for (const s of sources.slice(0, 8)) {
+          lines.push(`[^${s.id}] ${s.title} (${s.domain})`);
+        }
       }
     }
   }

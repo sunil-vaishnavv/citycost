@@ -22,6 +22,7 @@ import {
 } from '../draft-validate.js';
 import { curatedLinksForWriter } from '../link-validate.js';
 import type { ResearchPack } from '../research-engine.js';
+import { isRealSourcesEnabled } from '../../sources/index.js';
 import {
   ensureDraftIntegrity,
   formatIntegrityMeta,
@@ -231,19 +232,26 @@ async function writeSection(input: {
     ? memoryDigestForPrompt(mem, 900)
     : '';
 
-  const system = sanitizePromptText(
-    [
-      `You are ${writer.label}: ${writer.voice}`,
-      'Write one article section as JSON.',
-      `Aim for ${input.section.min_words}-${input.section.max_words} words (target near ${(input.section.min_words + input.section.max_words) >> 1}).`,
-      'Return {"blocks":[{"type":"heading","heading":"...","content":"..."},{"type":"paragraph","content":"..."}, ...]}',
-      'No FAQ or Summary here. No prompt/instruction language in prose.',
-      EVIDENCE_RULES,
-      'Internal links: optionally weave 0–2 contextual CityCost paths from the link list using natural anchors (never identical CTA wording).',
-      'Do NOT re-explain facts, indexes, or examples already covered in prior sections — reference briefly at most and add NEW decision value.',
-      uncertainty,
-    ].join('\n')
-  ).text;
+    const citationRule = isRealSourcesEnabled()
+      ? 'CITATION REQUIREMENT: When mentioning real figures, prices, or statistics, cite the verified source inline using markdown links [Source Name](URL) matching the provided SOURCES. If specific factual data is unavailable, state "Insufficient data" rather than inventing numbers.'
+      : '';
+
+    const system = sanitizePromptText(
+      [
+        `You are ${writer.label}: ${writer.voice}`,
+        'Write one article section as JSON.',
+        `Aim for ${input.section.min_words}-${input.section.max_words} words (target near ${(input.section.min_words + input.section.max_words) >> 1}).`,
+        'Return {"blocks":[{"type":"heading","heading":"...","content":"..."},{"type":"paragraph","content":"..."}, ...]}',
+        'No FAQ or Summary here. No prompt/instruction language in prose.',
+        EVIDENCE_RULES,
+        citationRule,
+        'Internal links: optionally weave 0–2 contextual CityCost paths from the link list using natural anchors (never identical CTA wording).',
+        'Do NOT re-explain facts, indexes, or examples already covered in prior sections — reference briefly at most and add NEW decision value.',
+        uncertainty,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    ).text;
 
   const user = sanitizePromptText(
     [
@@ -482,6 +490,13 @@ export async function runWriterV2(input: {
   };
 
   try {
+    if (isRealSourcesEnabled()) {
+      const sources = input.research.grounding_sources || [];
+      if (!sources.length) {
+        throw new Error('Insufficient data: No verifiable real-world sources available for this topic. Generation stopped to prevent hallucination.');
+      }
+    }
+
     await emit({
       type: 'stage',
       stage: 'editorial_brain',
@@ -761,6 +776,21 @@ export async function runWriterV2(input: {
     draft = { ...draft, blocks: sanitizeBlocks(draft.blocks) };
     passes.push({ kind: 'sanitize_assembly', meta: structuralPresenceMeta(draft) });
 
+    // Append Sources block if real sources or grounding sources are available
+    const sources = input.research.grounding_sources || [];
+    if (sources.length > 0) {
+      draft.blocks.push({
+        id: 'sources',
+        type: 'list',
+        heading: 'Sources',
+        content: sources.map((s) => `[${s.title}](${s.url || `https://${s.domain}`})`),
+      });
+      passes.push({
+        kind: 'sources',
+        meta: `count=${sources.length}`,
+      });
+    }
+
     // Freeze protected structural blocks BEFORE any rewrite/merge stage
     const protectedSnapshot = snapshotProtected(draft.blocks);
     {
@@ -810,6 +840,7 @@ export async function runWriterV2(input: {
         toc: snap.toc || protectedSnapshot.toc,
         faq: snap.faq || protectedSnapshot.faq,
         summary: snap.summary || protectedSnapshot.summary,
+        sources: snap.sources || protectedSnapshot.sources,
       };
       const { body } = splitProtectedBlocks(draft.blocks);
       const rewriteSystem = sanitizePromptText(

@@ -34,6 +34,7 @@ import {
 } from '../rag/index.js';
 import { toPublicTitle } from '../utils/clean-title.js';
 import { buildCalculationLedger } from './comparison-ledger.js';
+import { isRealSourcesEnabled, fetchRealWorldSources } from '../sources/index.js';
 
 function slugify(input: string): string {
   return input
@@ -448,44 +449,120 @@ export async function buildGroundedResearchPackAsync(
       : publicTitle.split(':')[0].trim();
   const comparisonCity = ctx.comparison ? String(ctx.comparison.cityB) : undefined;
 
-  const policy = groundingArticlePolicy();
   let ragResult: RagRetrievalResult | null = null;
-  if (!policy.permitted) {
-    ragResult = {
-      status: 'blocked',
-      error_category: 'policy',
-      error: policy.reason,
-      query: '',
-      targetCity,
-      comparisonCity,
-      sources: [],
-      facts: [],
-      factLines: [],
-      unsupportedDropped: 0,
-      retrievalTimestamp: new Date().toISOString(),
-      model: getRagModel(),
-    };
-  } else {
+
+  if (isRealSourcesEnabled()) {
     try {
-      ragResult = await retrieveGroundedCityCostData({
+      const realData = await fetchRealWorldSources({
         targetCity,
         comparisonCity,
         topicTitle: publicTitle,
-        category: topic.content_type,
-        apiKey,
+        country: ctx.country?.name ? String(ctx.country.name) : undefined,
         signal,
-        generate,
       });
+
+      if (realData.status === 'live' && realData.sources.length > 0) {
+        ragResult = {
+          status: 'live',
+          query: realData.query,
+          targetCity,
+          comparisonCity,
+          sources: realData.sources.map((s) => ({
+            id: s.id,
+            title: s.title,
+            url: s.url,
+            domain: s.domain,
+            retrievedAt: s.retrievedAt,
+            snippet: s.snippet,
+          })),
+          facts: realData.facts.map((f) => ({
+            category: f.category as any,
+            statement: f.statement,
+            city: f.city,
+            figure: f.figure,
+            sourceId: f.sourceId,
+            sourceIds: [f.sourceId],
+            citationRef: `[^${f.sourceId}]`,
+          })),
+          factLines: realData.factLines,
+          unsupportedDropped: 0,
+          retrievalTimestamp: realData.retrievedAt,
+          model: `real-sources(${realData.providerSummary})`,
+        };
+      } else {
+        ragResult = {
+          status: 'no_evidence',
+          error_category: 'no_supported_claims',
+          error: realData.error || 'No verifiable real-world sources found for topic',
+          query: realData.query,
+          targetCity,
+          comparisonCity,
+          sources: [],
+          facts: [],
+          factLines: [],
+          unsupportedDropped: 0,
+          retrievalTimestamp: new Date().toISOString(),
+          model: 'real-sources',
+        };
+      }
     } catch (err) {
       if (signal?.aborted) throw err;
-      console.warn('⚠️ RAG live retrieval skipped in research pack build:', err);
+      console.warn('⚠️ Real sources retrieval error in research pack build:', err);
+      ragResult = {
+        status: 'error',
+        error_category: 'network',
+        error: (err as Error)?.message || String(err),
+        query: '',
+        targetCity,
+        comparisonCity,
+        sources: [],
+        facts: [],
+        factLines: [],
+        unsupportedDropped: 0,
+        retrievalTimestamp: new Date().toISOString(),
+        model: 'real-sources',
+      };
+    }
+  } else {
+    // Legacy Google Grounding path
+    const policy = groundingArticlePolicy();
+    if (!policy.permitted) {
+      ragResult = {
+        status: 'blocked',
+        error_category: 'policy',
+        error: policy.reason,
+        query: '',
+        targetCity,
+        comparisonCity,
+        sources: [],
+        facts: [],
+        factLines: [],
+        unsupportedDropped: 0,
+        retrievalTimestamp: new Date().toISOString(),
+        model: getRagModel(),
+      };
+    } else {
+      try {
+        ragResult = await retrieveGroundedCityCostData({
+          targetCity,
+          comparisonCity,
+          topicTitle: publicTitle,
+          category: topic.content_type,
+          apiKey,
+          signal,
+          generate,
+        });
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        console.warn('⚠️ RAG live retrieval skipped in research pack build:', err);
+      }
     }
   }
 
   if (groundingRequiredForArticles()) {
     const status = ragResult ? researchStatusFor(ragResult) : 'grounding_unavailable';
     if (status !== 'grounding_verified') {
-      throw new GroundingRequiredError(status, ragResult?.error || 'grounding did not run');
+      throw new GroundingRequiredError(status, ragResult?.error);
     }
   }
 
