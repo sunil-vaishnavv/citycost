@@ -48,7 +48,7 @@ export async function searchTavily(
     retries?: number;
   } = {}
 ): Promise<{ sources: RealDataSource[]; answer?: string }> {
-  const apiKey = options.apiKey || getTavilyApiKey();
+  const apiKey = (options.apiKey !== undefined ? options.apiKey : getTavilyApiKey())?.trim();
   if (!apiKey) {
     throw new TavilyError('TAVILY_API_KEY is not configured or is a placeholder', 401);
   }
