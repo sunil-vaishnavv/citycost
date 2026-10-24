@@ -19,7 +19,7 @@ import {
   type DraftBlock,
   type WriterDraftPayload,
 } from '../draft-validate.js';
-import { isProtectedBlock } from './block-integrity.js';
+import { isProtectedBlock, isSourcesBlock } from './block-integrity.js';
 import { draftSectionChunks } from './section-chunks.js';
 import { blockPlain } from './content-quality/text-metrics.js';
 import {
@@ -291,14 +291,14 @@ export function applyNaturalLinks(draft: WriterDraftPayload): {
     const b = blocks[i];
     if (!b) continue;
     // Body only for structural integrity — do not mutate intro/toc/faq/summary structure
+    // Body and protected prose (intro, summary, faq) — naturalize visible slug anchors without changing block structure
     if (isProtectedBlock(b)) {
-      // Still scrub slug anchors inside FAQ answers (visible text) without changing block type
-      if (b.type === 'faq') {
+      if (b.type === 'faq' || b.type === 'intro' || b.type === 'summary') {
         const r = transformBlockContent(b.content);
         if (r.fixed) {
-          blocks[i] = { ...b, content: r.content };
+          blocks[i] = { ...b, content: r.content as typeof b.content };
           natural_anchors_fixed += r.fixed;
-          sections_touched.add('faq');
+          sections_touched.add(b.type);
         }
       }
       continue;
@@ -350,6 +350,8 @@ export function applyNaturalLinks(draft: WriterDraftPayload): {
 /** Visible text still contains slug-style anchors? */
 export function hasVisibleSlugAnchors(draft: WriterDraftPayload): boolean {
   for (const b of draft.blocks || []) {
+    // Terminal sources block contains citation URLs/names, not internal slug anchors
+    if (isSourcesBlock(b)) continue;
     const text = blockPlain(b);
     // Check markdown anchors
     MARKDOWN_LINK_RE.lastIndex = 0;
@@ -357,6 +359,11 @@ export function hasVisibleSlugAnchors(draft: WriterDraftPayload): boolean {
     const re = /\[([^\]]+)\]\(([^)]+)\)/g;
     while ((m = re.exec(text)) !== null) {
       const anchor = m[1] || '';
+      const href = (m[2] || '').trim();
+      // External citation links with human source names (e.g. [U.S. Census Bureau](https://...)) are verified sources, not internal slug anchors
+      if (/^https?:\/\//i.test(href) && !/(?:www\.)?citycost\.online/i.test(href)) {
+        continue;
+      }
       if (BAD_CTA.test(anchor.trim())) return true;
       if (SLUG_ANCHOR_RE.test(anchor)) return true;
       SLUG_ANCHOR_RE.lastIndex = 0;
