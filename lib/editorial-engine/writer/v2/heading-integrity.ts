@@ -227,6 +227,37 @@ export function repairHeadingsAndToc(
     return b;
   });
 
+  // The same section heading repeated later in the article (non-adjacent, e.g. the planned
+  // "Comparison frame and decision criteria" section emitted twice). Keep the first occurrence
+  // and fold the later block's content under it: drop the repeated heading text only.
+  // FAQ / summary blocks keep their own headings.
+  {
+    const seenHeadings = new Set<string>();
+    const titleKey = normalizeHeading(articleTitle);
+    blocks = blocks.reduce<DraftBlock[]>((acc, b) => {
+      const t = renderedHeadingText(b);
+      if (!t) {
+        acc.push(b);
+        return acc;
+      }
+      const n = normalizeHeading(t);
+      if (!n || n === titleKey || !seenHeadings.has(n)) {
+        if (n) seenHeadings.add(n);
+        acc.push(b);
+        return acc;
+      }
+      if (b.type === 'faq' || b.type === 'summary') {
+        acc.push(b);
+        return acc;
+      }
+      fixes.push(`duplicate_heading_merged:${b.id}`);
+      if (b.type === 'heading') return acc; // pure heading block — drop it
+      const { heading: _drop, ...rest } = b;
+      acc.push(rest as DraftBlock);
+      return acc;
+    }, []);
+  }
+
   // TOC is derived from the FINAL heading tree (H2, document order) — never the plan.
   const tocEntries = collectTocHeadings(blocks, articleTitle);
   blocks = blocks.map((b) => {
