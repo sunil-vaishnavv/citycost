@@ -362,19 +362,23 @@ export async function markProviderUsed(
   opts: { latencyMs?: number; error?: string | null; status?: string }
 ): Promise<void> {
   if (!pool) return;
-  await pool.execute(
-    `UPDATE editorial_ai_settings SET
-       last_used_at = (NOW() AT TIME ZONE 'UTC'),
-       last_error = $1,
-       status = COALESCE($2, status),
-       avg_latency_ms = CASE
-         WHEN avg_latency_ms IS NULL THEN $3
-         ELSE ROUND((avg_latency_ms * 0.7 + $3 * 0.3)::numeric, 2)
-       END,
-       updated_at = (NOW() AT TIME ZONE 'UTC')
-     WHERE provider_name = $4`,
-    [opts.error ?? null, opts.status ?? null, opts.latencyMs ?? 0, name]
-  );
+  try {
+    await pool.execute(
+      `UPDATE editorial_ai_settings SET
+         last_used_at = (NOW() AT TIME ZONE 'UTC'),
+         last_error = $1,
+         status = COALESCE($2, status),
+         avg_latency_ms = CASE
+           WHEN avg_latency_ms IS NULL THEN $3
+           ELSE ROUND((avg_latency_ms * 0.7 + $3 * 0.3)::numeric, 2)
+         END,
+         updated_at = (NOW() AT TIME ZONE 'UTC')
+       WHERE provider_name = $4`,
+      [opts.error ?? null, opts.status ?? null, opts.latencyMs ?? 0, name]
+    );
+  } catch {
+    // Ignore DB log failures when DB is offline
+  }
 }
 
 export async function markProviderTested(
@@ -384,16 +388,20 @@ export async function markProviderTested(
   latencyMs: number
 ): Promise<void> {
   if (!pool) return;
-  await pool.execute(
-    `UPDATE editorial_ai_settings SET
-       last_tested_at = (NOW() AT TIME ZONE 'UTC'),
-       status = $1,
-       last_error = $2,
-       avg_latency_ms = $3,
-       updated_at = (NOW() AT TIME ZONE 'UTC')
-     WHERE provider_name = $4`,
-    [status, error, latencyMs, name]
-  );
+  try {
+    await pool.execute(
+      `UPDATE editorial_ai_settings SET
+         last_tested_at = (NOW() AT TIME ZONE 'UTC'),
+         status = $1,
+         last_error = $2,
+         avg_latency_ms = $3,
+         updated_at = (NOW() AT TIME ZONE 'UTC')
+       WHERE provider_name = $4`,
+      [status, error, latencyMs, name]
+    );
+  } catch {
+    // Ignore DB log failures when DB is offline
+  }
 }
 
 export async function insertAiUsageLog(input: {
@@ -437,26 +445,30 @@ export async function insertAiUsageLog(input: {
       ]
     );
   } catch {
-    // Fallback when article_id column not yet migrated
-    await pool.execute<ResultSetHeader>(
-      `INSERT INTO editorial_ai_usage_logs
-        (provider_name, model, stage, success, latency_ms, tokens_in, tokens_out,
-         estimated_cost_usd, error_message, retry_count, meta_json)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
-      [
-        input.provider_name,
-        input.model ?? null,
-        input.stage ?? null,
-        input.success,
-        input.latency_ms ?? null,
-        input.tokens_in ?? null,
-        input.tokens_out ?? null,
-        input.estimated_cost_usd ?? null,
-        input.error_message ?? null,
-        input.retry_count ?? 0,
-        JSON.stringify(meta),
-      ]
-    );
+    try {
+      // Fallback when article_id column not yet migrated
+      await pool.execute<ResultSetHeader>(
+        `INSERT INTO editorial_ai_usage_logs
+          (provider_name, model, stage, success, latency_ms, tokens_in, tokens_out,
+           estimated_cost_usd, error_message, retry_count, meta_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+        [
+          input.provider_name,
+          input.model ?? null,
+          input.stage ?? null,
+          input.success,
+          input.latency_ms ?? null,
+          input.tokens_in ?? null,
+          input.tokens_out ?? null,
+          input.estimated_cost_usd ?? null,
+          input.error_message ?? null,
+          input.retry_count ?? 0,
+          JSON.stringify(meta),
+        ]
+      );
+    } catch {
+      // Ignore DB log failures when DB is offline
+    }
   }
 }
 

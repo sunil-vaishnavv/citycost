@@ -7,8 +7,51 @@ import type { AiProviderName, ProviderRuntimeConfig } from './types.js';
 export async function selectProviderChain(
   preferred?: AiProviderName
 ): Promise<Array<ProviderRuntimeConfig & { id: number }>> {
-  const all = await listAiProviderSettings();
-  const enabled = all.filter((p) => p.enabled && p.api_key);
+  let all: Array<ProviderRuntimeConfig & { id: number }> = [];
+  try {
+    all = await listAiProviderSettings();
+  } catch (err) {
+    console.warn('[provider-selector] Failed to query database for AI settings, falling back to .env variables:', (err as Error)?.message || err);
+  }
+  let enabled = all.filter((p) => p.enabled && p.api_key);
+
+  // Fallback to active environment keys if DB is offline or returned empty
+  if (!enabled.length) {
+    const { syncProviderKeysFromEnvFile } = await import('../secrets/provider-env.js');
+    const { PROVIDER_DEFAULTS } = await import('./provider-config.js');
+    const envKeys = syncProviderKeysFromEnvFile();
+    for (const def of PROVIDER_DEFAULTS) {
+      const k = envKeys[def.name];
+      if (k) {
+        enabled.push({
+          id: 0,
+          provider_name: def.name,
+          enabled: true,
+          priority: def.priority,
+          api_key: k,
+          api_key_masked: null,
+          default_model: def.default_model,
+          temperature: def.temperature,
+          top_p: def.top_p,
+          max_output_tokens: def.max_output_tokens,
+          max_input_tokens: def.max_input_tokens,
+          context_window: def.context_window,
+          rpm_limit: def.rpm_limit,
+          tpm_limit: def.tpm_limit,
+          daily_limit: def.daily_limit,
+          monthly_limit: null,
+          fallback_provider: null,
+          status: 'ready',
+          last_tested_at: null,
+          last_used_at: null,
+          last_error: null,
+          avg_latency_ms: null,
+          avg_cost_usd: null,
+        });
+      }
+    }
+  }
+
   // Prefer healthy/ready providers, then degraded (quota), then unknown/down last.
   // Priority is still the primary order within the same health band.
   const rank = (status: string) => {
