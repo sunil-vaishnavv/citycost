@@ -40,6 +40,20 @@ const HAS_ADVICE =
   /\b(should|consider|check|compare|plan|budget|avoid|next|confirm|ask|verify)\b/i;
 const HAS_CONTEXT = /\b(because|when|if|for|depending|while|after|before|in)\b/i;
 
+/** Generic sentences this validator used to append to FAQ answers. */
+export const LEGACY_FAQ_BOILERPLATE = [
+  'In practice, treat published figures as a baseline, then confirm with a local quote and decide whether your housing or essentials line needs a larger buffer.',
+  'Next step: write down one decision (neighbourhood, lease length, or budget cap) before you rely on the average alone.',
+  'Context matters when your situation differs from the citywide mix.',
+];
+
+export function stripLegacyFaqBoilerplate(answer: string): string {
+  let a = answer;
+  for (const sentence of LEGACY_FAQ_BOILERPLATE) a = a.split(sentence).join(' ');
+  a = a.replace(/^In short:\s*/i, '');
+  return a.replace(/\s+/g, ' ').trim();
+}
+
 export function validateFaq(draft: WriterDraftPayload): {
   draft: WriterDraftPayload;
   result: ValidatorResult;
@@ -66,25 +80,29 @@ export function validateFaq(draft: WriterDraftPayload): {
   const improved = items.map((item) => {
     let a = item.a.trim();
     let changed = false;
+    // Report only. Appending the same generic sentences ("In short:", "Next step: write
+    // down one decision…", "Context matters…") to every weak answer produced identical
+    // FAQ endings; weak answers are now surfaced to the gate instead of padded.
     if (INDEX_ONLY.test(a) || a.split(/\s+/).length < 18) {
       findings.push({
         code: 'faq_index_only',
         message: `Thin/index-only FAQ answer for: ${item.q.slice(0, 60)}`,
         severity: 'warn',
       });
-      a = `${a} In practice, treat published figures as a baseline, then confirm with a local quote and decide whether your housing or essentials line needs a larger buffer.`;
-      changed = true;
     }
     if (!HAS_DIRECT.test(a)) {
-      a = `In short: ${a}`;
-      changed = true;
+      findings.push({ code: 'faq_not_direct', message: `FAQ answer does not open directly: ${item.q.slice(0, 60)}`, severity: 'warn' });
     }
     if (!HAS_ADVICE.test(a)) {
-      a = `${a} Next step: write down one decision (neighbourhood, lease length, or budget cap) before you rely on the average alone.`;
-      changed = true;
+      findings.push({ code: 'faq_no_advice', message: `FAQ answer has no practical advice: ${item.q.slice(0, 60)}`, severity: 'warn' });
     }
     if (!HAS_CONTEXT.test(a)) {
-      a = `${a} Context matters when your situation differs from the citywide mix.`;
+      findings.push({ code: 'faq_no_context', message: `FAQ answer lacks context: ${item.q.slice(0, 60)}`, severity: 'warn' });
+    }
+    // Strip boilerplate previously appended by this validator (older drafts / revisions).
+    const cleaned = stripLegacyFaqBoilerplate(a);
+    if (cleaned !== a) {
+      a = cleaned;
       changed = true;
     }
     if (changed) rewritten += 1;

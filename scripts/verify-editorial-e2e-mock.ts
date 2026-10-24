@@ -51,6 +51,7 @@ const ANGLES = [
   'what to check before paying any holding deposit',
   'how seasonal demand shifts asking rents around university terms',
 ];
+const UNIQUE = ['alder', 'birch', 'cedar', 'dune', 'ember', 'fjord', 'grove', 'harbor', 'inlet', 'juniper', 'kelp', 'lagoon', 'maple', 'nectar', 'orchid', 'pebble', 'quartz', 'reef', 'sage', 'tundra', 'umber', 'violet', 'willow', 'yarrow', 'zephyr'];
 const VERBS = ['Start by', 'Begin with', 'Focus on', 'Look first at', 'Settle', 'Work out', 'Check', 'Confirm'];
 const TAILS = [
   'and write the number down before viewing anything.',
@@ -79,7 +80,11 @@ class MockLlm {
     const verb = VERBS[(this.n * 3 + i) % VERBS.length]!;
     const tail = TAILS[(this.n + i * 7) % TAILS.length]!;
     this.n += 1;
-    return `${verb} ${angle} in ${city} for ${topic.toLowerCase()}, ${tail}`;
+    // Section-specific words + a unique case marker keep mock sentences from being
+    // (correctly) removed as repeated boilerplate by the final gate.
+    const focus = topic.toLowerCase().split(/\s+/).filter((w) => w.length > 3).slice(0, 3).join(' ');
+    const marker = `${UNIQUE[this.n % UNIQUE.length]}${Math.floor(this.n / UNIQUE.length)}`;
+    return `${verb} ${angle} in ${city} for ${focus} (case ${marker}), ${tail}`;
   }
 
   private paragraphs(topic: string, words: number): string[] {
@@ -102,8 +107,10 @@ class MockLlm {
           ? 'faq'
           : /"type":"summary"/.test(system)
             ? 'summary'
-            : /^Expand this|Add one useful/m.test(system)
+            : /^Expand this|Add one useful|words of NEW/m.test(system)
               ? 'expand'
+              : /Write the body of the "/.test(system)
+                ? 'fill'
               : /humanization editor/.test(system)
                 ? 'humanize'
                 : 'other';
@@ -136,6 +143,9 @@ class MockLlm {
       text = JSON.stringify({ blocks: [{ type: 'faq', heading: 'FAQ', content: items.map(([q, a]) => ({ q, a })) }] });
     } else if (kind === 'summary') {
       text = JSON.stringify({ blocks: [{ type: 'summary', heading: 'Summary', content: `${diff ? `${diff[2]} keeps the core monthly basket about ${diff[1]} lower.` : ''} ${this.paragraphs('the decision', 50).join(' ')}` }] });
+    } else if (kind === 'fill') {
+      const heading = /Write the body of the "([^"]+)" section/.exec(system)?.[1] || 'section';
+      text = JSON.stringify({ blocks: this.paragraphs(heading, 120).map((p) => ({ type: 'paragraph', content: p })) });
     } else if (kind === 'expand') {
       const need = Number(/NEED(?:_WORDS)?[=≈](\d+)/.exec(user)?.[1] || 80);
       text = JSON.stringify({ blocks: this.paragraphs('the budget', need).map((p) => ({ type: 'paragraph', content: p })) });

@@ -23,9 +23,11 @@ import {
   type TextLocation,
 } from './prose-integrity.js';
 import { inspectHeadingsAndToc, repairHeadingsAndToc } from './heading-integrity.js';
-import { judgeLink, type LinkGeoScope } from './link-relevance.js';
+import type { LinkGeoScope } from './link-relevance.js';
+import { findSiteLinkIssues, type SiteLinkIssue } from './link-normalize.js';
 import { unlinkIrrelevantLinks } from './link-engine.js';
 import { validateLedgerConsistency } from './ledger-consistency.js';
+import { inspectPublicContentQuality, repairPublicContentQuality } from './public-content-quality.js';
 
 export interface PublicIntegrityContext {
   /** Public article title (already passed through toPublicTitle). */
@@ -81,18 +83,20 @@ export function findDraftQaMarkers(draft: WriterDraftPayload): Array<{ marker: s
   return out;
 }
 
-const LINK_RE = /\[[^\]]+\]\(((?:https?:\/\/(?:www\.)?citycost\.online)?\/[^)\s]*)\)/gi;
-
-function inspectLinks(draft: WriterDraftPayload, scope: LinkGeoScope): PublicIntegrityFinding[] {
+function inspectLinks(draft: WriterDraftPayload, scope: LinkGeoScope | null): PublicIntegrityFinding[] {
   const findings: PublicIntegrityFinding[] = [];
+  const messages: Record<SiteLinkIssue['kind'], string> = {
+    placeholder_url: 'Placeholder / example URL in public content',
+    unknown_route: 'Link to a non-existent route',
+    irrelevant: 'Irrelevant internal link',
+    slug_label: 'Malformed link text (built from a URL slug)',
+  };
   for (const { text, loc } of collectDraftText(draft)) {
-    for (const m of text.matchAll(LINK_RE)) {
-      const verdict = judgeLink(m[1]!, scope);
-      if (verdict === 'relevant') continue;
+    for (const issue of findSiteLinkIssues(text, scope)) {
       findings.push({
-        code: verdict === 'unknown_route' ? 'link_unknown_route' : 'link_irrelevant',
+        code: issue.kind === 'irrelevant' ? 'link_irrelevant' : issue.kind === 'unknown_route' ? 'link_unknown_route' : issue.kind,
         severity: 'error',
-        message: `${verdict === 'unknown_route' ? 'Link to a non-existent route' : 'Irrelevant internal link'}: ${m[1]}`,
+        message: `${messages[issue.kind]}: ${issue.label ? `[${issue.label}]` : ''}(${issue.href})`,
         location: loc,
       });
     }
@@ -110,13 +114,17 @@ export function repairPublicIntegrity(
   const qa = scrubDraftQaMarkers(d, ctx.internalLabels || []);
   d = qa.draft;
   if (qa.fixes) fixes.push(`qa_markers_scrubbed:${qa.fixes}`);
+  const quality = repairPublicContentQuality(d, ctx.ledger);
+  d = quality.draft;
+  fixes.push(...quality.fixes);
   const prose = repairProseIntegrity(d);
   d = prose.draft;
   if (prose.fixes) fixes.push(`sentence_breaks_repaired:${prose.fixes}`);
-  if (ctx.scope) {
-    const un = unlinkIrrelevantLinks(d, ctx.scope);
+  {
+    const un = unlinkIrrelevantLinks(d, ctx.scope || null);
     d = un.draft;
-    if (un.removed.length) fixes.push(`irrelevant_links_unlinked:${un.removed.length}`);
+    if (un.removed.length) fixes.push(`invalid_links_unlinked:${un.removed.length}`);
+    if (un.relabelled) fixes.push(`link_labels_fixed:${un.relabelled}`);
   }
   const headings = repairHeadingsAndToc(d, ctx.articleTitle);
   d = headings.draft;
@@ -146,7 +154,10 @@ export function inspectPublicIntegrity(
   for (const h of inspectHeadingsAndToc(draft, ctx.articleTitle)) {
     errors.push({ code: h.code, severity: 'error', message: h.message, location: { blockId: h.blockId } });
   }
-  if (ctx.scope) errors.push(...inspectLinks(draft, ctx.scope));
+  errors.push(...inspectLinks(draft, ctx.scope || null));
+  for (const f of inspectPublicContentQuality(draft, ctx.ledger)) {
+    (f.severity === 'error' ? errors : warnings).push({ code: f.code, severity: f.severity, message: f.message, location: f.location });
+  }
   for (const f of validateLedgerConsistency(draft, ctx.ledger)) {
     (f.severity === 'error' ? errors : warnings).push({ code: f.code, severity: f.severity, message: f.message, location: f.location });
   }
@@ -180,4 +191,30 @@ export function formatPublicIntegrityDebug(report: PublicIntegrityReport): strin
   ]
     .filter(Boolean)
     .join(';');
+}
+
+/**
+ * Mechanical integrity repair for ANY save of a generated (non-manual) draft —
+ * Fix Issues, AI revision patches, review normalisation, FAQ regeneration.
+ * Rebuilds the TOC from final headings and re-applies link, leakage, QA-marker and
+ * prose repairs so no revision path can persist content that skipped them.
+ * The publish gate re-inspects the stored draft independently.
+ */
+export function finalizeDraftForSave(
+  article: { prompt_hash?: string | null; ai_model?: string | null; research_pack_json?: unknown; seo_title?: string | null },
+  draft: WriterDraftPayload
+): { draft: WriterDraftPayload; fixes: string[] } {
+  const research = (article.research_pack_json || null) as {
+    geo_scope?: LinkGeoScope;
+    calculation_ledger?: CalculationLedger | null;
+    origin?: string;
+  } | null;
+  const manual =
+    article.prompt_hash === 'manual' || article.ai_model === 'manual' || research?.origin === 'manual';
+  if (manual) return { draft, fixes: [] };
+  return repairPublicIntegrity(draft, {
+    articleTitle: draft.seo_title || article.seo_title || '',
+    scope: research?.geo_scope || null,
+    ledger: research?.calculation_ledger || null,
+  });
 }

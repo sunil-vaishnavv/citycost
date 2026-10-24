@@ -82,13 +82,20 @@ function defectiveDraft(): WriterDraftPayload {
         id: 'p1',
         type: 'paragraph',
         content:
-          'Melbourne rents are steeper. upfront costs include a bond. See [Afghanistan living costs](/country/afghanistan) and [Sydney prices](/city/sydney-new-south-wales-australia).',
+          'Melbourne rents are steeper. upfront costs include a bond. See [Afghanistan living costs](/country/afghanistan) and [Sydney prices](/city/sydney-new-south-wales-australia). ' +
+          'A one-bedroom flat near the Sydney CBD lists for about A$3,277 a month, against roughly A$2,537 for a comparable Melbourne unit. ' +
+          'Inner-ring suburbs with a direct train line usually cost a few hundred dollars less than city-centre stock, so renters often trade twenty minutes of commuting for a lower lease. ' +
+          'Budget four weeks of rent as bond plus the first month in advance before you sign.',
       },
       { id: 'h2', type: 'heading', heading: 'Transport options', content: '' },
       {
         id: 'p2',
         type: 'paragraph',
-        content: 'Good transport. routes help, providing a. solid base. Do a test run of your commute before signing.',
+        content:
+          'Good transport. routes help, providing a. solid base. Do a test run of your commute before signing. ' +
+          'Sydney trains and Melbourne trams both cap weekly fares, which makes daily commuting predictable once you know your zone. ' +
+          'Cyclists in flatter Melbourne neighbourhoods often skip a pass entirely, while hilly Sydney suburbs push most residents onto buses or ferries. ' +
+          'Check whether your employer subsidises a travel card before choosing a suburb far from the office.',
       },
       {
         id: 'tbl',
@@ -272,7 +279,7 @@ async function main() {
     const partial = buildCalculationLedger(['atlantis-nowhere', MEL])!;
     assert.equal(partial.status, 'partial');
     assert.equal(partial.difference, null);
-    assert.ok(ledgerFactLines(partial).some((l) => /No figure available/.test(l)));
+    assert.ok(ledgerFactLines(partial).some((l) => /^Data gap:/.test(l)));
   });
 
   await test('ledger reaches the writer facts digest (single source of figures)', () => {

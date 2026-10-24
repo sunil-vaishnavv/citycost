@@ -195,14 +195,19 @@ function sectionHeadingLabel(block: DraftBlock): string | null {
 }
 
 export function buildTocHtml(blocks: DraftBlock[]): string {
-  const headings = blocks.map(sectionHeadingLabel).filter((h): h is string => Boolean(h));
-  if (!headings.length) return '';
-  const items = headings
-    .map((h, i) => {
-      const id = `section-${i + 1}`;
-      return `<li><a href="#${id}">${esc(h)}</a></li>`;
-    })
-    .join('');
+  // Same numbering as renderArticleBlocksHtml (every rendered heading gets section-N),
+  // but only H2 sections are listed — matching the public page and the stored TOC.
+  const entries: Array<{ id: string; label: string }> = [];
+  let index = 0;
+  for (const b of blocks) {
+    const label = sectionHeadingLabel(b);
+    if (!label) continue;
+    index += 1;
+    if (b.type === 'heading' && blockHeadingLevel(b) >= 3) continue;
+    entries.push({ id: `section-${index}`, label });
+  }
+  if (!entries.length) return '';
+  const items = entries.map((e) => `<li><a href="#${e.id}">${esc(e.label)}</a></li>`).join('');
   return `<nav class="blog-toc" aria-label="Table of contents"><h2>Table of contents</h2><ol>${items}</ol></nav>`;
 }
 

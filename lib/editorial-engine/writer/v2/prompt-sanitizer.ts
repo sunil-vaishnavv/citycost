@@ -7,6 +7,15 @@ import type { ResearchPack } from '../research-engine.js';
 import { ledgerFactLines, type CalculationLedger } from '../../research/comparison-ledger.js';
 
 /** Phrases that must never appear in prompts sent to the model. */
+/**
+ * Evidence rules for every writer SYSTEM prompt. Kept out of the FACTS block on
+ * purpose: rule sentences placed among facts were copied into published prose.
+ */
+export const EVIDENCE_RULES =
+  'Evidence rules: quote CityCost figures exactly as they appear in FACTS and never compute new differences or totals. ' +
+  'Where FACTS reports a data gap for a category, say the comparison is not available and do not name a cheaper or better city for it. ' +
+  'Never claim an overall winner beyond what the figures show. Never copy labels, notes or instructions from FACTS into the article.';
+
 export const PROMPT_PLANNING_BANS: Array<{ re: RegExp; repl: string }> = [
   { re: /\bindexed averages\b/gi, repl: 'cost indices' },
   { re: /\bindexed signals?\b/gi, repl: 'cost figures' },

@@ -336,7 +336,8 @@ function ok(name: string): void {
   assert(seoPlan, 'SEO category planned for missing links');
   const repaired = applyDeterministicRepairs(draft, 'SEO', {
     onlyBlockIds: seoPlan!.affected_block_ids,
-    linkCandidates: ['/cost-of-living/berlin', '/cost-of-living/dublin'],
+    // Real CityCost routes — /cost-of-living/* does not exist (404) and is now unlinked.
+    linkCandidates: ['/city/berlin-berlin-germany', '/methodology'],
   });
   assert(countBodyInternalLinks(repaired.draft) >= 1, 'links inserted');
   const keep = repaired.draft.blocks.find((b) => b.id === 'keep');

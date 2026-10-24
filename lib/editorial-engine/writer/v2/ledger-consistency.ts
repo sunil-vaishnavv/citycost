@@ -165,7 +165,9 @@ export function validateLedgerConsistency(
       }
 
       // 3) Modeled remainder presented as savings / disposable income.
-      if (/\b(disposable income|savings?|left to save|you (?:can|could|will) save)\b/i.test(sentence)) {
+      // A correct disclaimer ("…is not disposable income or savings") is not a conflation.
+      const negatedSavings = /\b(?:not|isn't|is not|never|rather than|instead of)\s+(?:\w+\s+){0,2}(?:disposable income|savings?)\b/i.test(sentence);
+      if (!negatedSavings && /\b(disposable income|savings?|left to save|you (?:can|could|will) save)\b/i.test(sentence)) {
         const remainders = (ledger?.sides || []).map((s) => s.modeled_remainder).filter((v): v is number => v != null);
         const hit = /\bremainder\b/i.test(sentence) || amounts(sentence).some((a) => remainders.some((r) => Math.abs(a - r) / r <= 0.02));
         if (hit) {

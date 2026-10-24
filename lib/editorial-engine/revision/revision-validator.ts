@@ -3,6 +3,7 @@
  * Heading uniquify uses the single headingFingerprint algorithm from normalize-draft.
  */
 
+import { applyAiPhraseBlacklist } from '../writer/v2/ai-phrase-blacklist.js';
 import { repairPublicIntegrity } from '../writer/v2/public-integrity-gate.js';
 import { filterRelevantHrefs, type LinkGeoScope } from '../writer/v2/link-relevance.js';
 import { toPublicTitle } from '../utils/clean-title.js';
@@ -153,7 +154,11 @@ function repairText(text: string, mode: 'readability' | 'style'): { text: string
         if (/^\s*(?:[-*+|#>]|\d+[.)])\s/m.test(para)) return para;
         const rebuilt: string[] = [];
         for (const s of para.split(/(?<=[.!?])\s+/)) {
-          const trimmed = s.trim();
+          // Drop filler openers ("Furthermore it is important to note that…") — a safe
+          // readability gain when a sentence has no clause boundary to split at.
+          const deFillered = applyAiPhraseBlacklist(s).text;
+          if (deFillered !== s.trim()) changed = true;
+          const trimmed = deFillered.trim();
           if (!trimmed) continue;
           const parts = splitLongSentence(trimmed, 18);
           if (parts.length > 1) changed = true;

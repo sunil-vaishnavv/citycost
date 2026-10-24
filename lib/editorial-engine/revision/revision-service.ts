@@ -9,6 +9,7 @@
  * as a soft cap on patch categories in one cycle — NOT as loop iterations.
  */
 
+import { finalizeDraftForSave } from '../writer/v2/public-integrity-gate.js';
 import type { LinkGeoScope } from '../writer/v2/link-relevance.js';
 import {
   getArticleById,
@@ -182,11 +183,14 @@ function reportFromLatest(
 
 async function persistDraft(articleId: number, draft: WriterDraftPayload): Promise<void> {
   const normalized = normalizeDraft(draft);
+  // Re-run TOC / link / leakage / prose integrity after every revision before saving.
+  const article = await getArticleById(articleId);
+  const final = article ? finalizeDraftForSave(article, normalized.draft).draft : normalized.draft;
   await updateArticleDraft({
     id: articleId,
-    draft: normalized.draft,
-    word_count: countDraftWords(normalized.draft),
-    reading_time_minutes: Math.max(1, Math.round(countDraftWords(normalized.draft) / 220)),
+    draft: final,
+    word_count: countDraftWords(final),
+    reading_time_minutes: Math.max(1, Math.round(countDraftWords(final) / 220)),
   });
 }
 

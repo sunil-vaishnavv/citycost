@@ -12,6 +12,7 @@
  * Quality Audit.
  */
 
+import { normalizeSiteLinks, routeLabel } from './link-normalize.js';
 import {
   countCityCostPathMentions,
   MIN_CITYCOST_PATH_MENTIONS,
@@ -85,6 +86,12 @@ const STOP_WORDS = new Set([
 
 /** Turn a URL path or slug into a human label. */
 export function slugToNaturalLabel(raw: string): string {
+  // Verified city / country / compare routes use catalog names ("Sydney", not
+  // "Sydney New" from the slug). Authority pages keep their lower-case labels below.
+  if (/\/(?:city|country|compare)\//i.test(raw)) {
+    const fromCatalog = routeLabel(raw);
+    if (fromCatalog) return fromCatalog;
+  }
   let s = raw.trim();
   // Strip URL / markdown path
   s = s.replace(/^https?:\/\/[^/]+/i, '');
@@ -564,19 +571,26 @@ export interface RunInternalLinkEngineInput {
 const SITE_LINK_RE = /\[([^\]]+)\]\(((?:https?:\/\/(?:www\.)?citycost\.online)?\/[^)\s]*)\)/gi;
 
 /** Replace irrelevant / non-existent internal links with their plain anchor text. */
+/**
+ * Reconcile every site link with verified CityCost routes (see link-normalize.ts):
+ * placeholder hosts, non-existent or irrelevant routes are unlinked (text kept),
+ * slug-derived anchors get catalog names. `scope` null = route checks only.
+ */
 export function unlinkIrrelevantLinks(
   draft: WriterDraftPayload,
-  scope: LinkGeoScope
-): { draft: WriterDraftPayload; removed: string[] } {
+  scope: LinkGeoScope | null
+): { draft: WriterDraftPayload; removed: string[]; relabelled: number } {
   const removed: string[] = [];
-  const fix = (text: string) =>
-    text.replace(SITE_LINK_RE, (whole, label: string, href: string) => {
-      if (judgeLink(href, scope) === 'relevant') return whole;
-      removed.push(href);
-      return label;
-    });
+  let relabelled = 0;
   const walk = (v: unknown): unknown => {
-    if (typeof v === 'string') return fix(v);
+    if (typeof v === 'string') {
+      const r = normalizeSiteLinks(v, scope);
+      for (const f of r.fixes) {
+        if (f.kind === 'slug_label') relabelled += 1;
+        else removed.push(f.href);
+      }
+      return r.text;
+    }
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
       const o: Record<string, unknown> = {};
@@ -586,7 +600,7 @@ export function unlinkIrrelevantLinks(
     return v;
   };
   const blocks = (draft.blocks || []).map((b) => ({ ...b, content: walk(b.content) as DraftBlock['content'] }));
-  return { draft: { ...draft, blocks }, removed };
+  return { draft: { ...draft, blocks }, removed, relabelled };
 }
 
 /**
@@ -602,12 +616,14 @@ export function runInternalLinkEngine(input: RunInternalLinkEngineInput): {
   let draft = input.draft;
   let irrelevant_removed: string[] = [];
   let need = input.min ?? MIN_CITYCOST_PATH_MENTIONS;
-  if (input.scope) {
-    const un = unlinkIrrelevantLinks(draft, input.scope);
+  {
+    const un = unlinkIrrelevantLinks(draft, input.scope || null);
     draft = un.draft;
     irrelevant_removed = un.removed;
-    candidates = filterRelevantHrefs(candidates, input.scope);
-    need = Math.min(need, internalLinkFloor(candidates.length));
+    if (input.scope) {
+      candidates = filterRelevantHrefs(candidates, input.scope);
+      need = Math.min(need, internalLinkFloor(candidates.length));
+    }
   }
 
   let natural_anchors_fixed = 0;

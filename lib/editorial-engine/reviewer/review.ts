@@ -3,6 +3,7 @@
  * load → normalize → persist snapshot → Rule Validator → AI Reviewer → Decision
  */
 
+import { finalizeDraftForSave } from '../writer/v2/public-integrity-gate.js';
 import { REVIEWER_ENGINE_VERSION } from '../constants.js';
 import { insertGenerationLog } from '../db/generation-logs-repo.js';
 import { getActivePrompt } from '../db/prompts-repo.js';
@@ -157,7 +158,8 @@ export async function reviewArticle(
     // PART 1–2: normalize → persist snapshot (single source of truth)
     const raw = asDraft(article);
     const normalized = normalizeDraft(raw);
-    const snapshot = normalized.draft;
+    // Reviews always see (and persist) the integrity-repaired draft.
+    const snapshot = finalizeDraftForSave(article, normalized.draft).draft;
     if (opts?.persist_normalize !== false) {
       await updateArticleDraft({
         id: articleId,
