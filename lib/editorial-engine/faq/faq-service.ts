@@ -3,6 +3,7 @@
  * Does not modify Writer / Research / Review engines.
  */
 
+import { finalizeDraftForSave } from '../writer/v2/public-integrity-gate.js';
 import { getArticleById, updateArticleDraft } from '../db/articles-repo.js';
 import type { ResearchPack } from '../research/schema.js';
 import type { WriterDraftPayload } from '../writer/draft-validate.js';
@@ -116,7 +117,7 @@ export async function regenerateArticleFaq(articleId: number): Promise<FaqApplyR
     articleId,
   });
 
-  const next = replaceFaqInDraft(draft, generated.block);
+  const next = finalizeDraftForSave(article, replaceFaqInDraft(draft, generated.block)).draft;
   const words = countWords(next);
   await updateArticleDraft({
     id: articleId,

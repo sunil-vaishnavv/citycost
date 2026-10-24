@@ -24,6 +24,7 @@ import { countBodyInternalLinks } from '../validation/normalize-draft.js';
 import { getTopicById } from '../db/topics-repo.js';
 import { internalTitleLabels, toPublicTitle } from '../utils/clean-title.js';
 import { inspectPublicIntegrity } from '../writer/v2/public-integrity-gate.js';
+import { inspectRenderedArticleHtml } from '../blog/rendered-html-check.js';
 import { linkFloorForResearch, type LinkGeoScope, type LinkResearchLike } from '../writer/v2/link-relevance.js';
 import type { CalculationLedger } from '../research/comparison-ledger.js';
 import { groundingRequiredForArticles } from '../rag/grounding-policy.js';
@@ -125,6 +126,7 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
       /* topic lookup is best-effort */
     }
   }
+  const renderedFindings = manual ? [] : inspectRenderedArticleHtml(draft);
   const publicIntegrity = manual
     ? null
     : inspectPublicIntegrity(draft, {
@@ -258,6 +260,16 @@ export async function getPublishReadiness(articleId: number): Promise<PublishRea
       label: 'Slug',
       passed: slugOk,
       detail: slugOk ? article.slug : 'Valid unique slug required',
+    },
+    {
+      key: 'rendered_html',
+      label: 'Rendered article (TOC anchors, links, headings)',
+      passed: manual ? true : renderedFindings.length === 0,
+      detail: manual
+        ? 'Not applied to manual articles'
+        : renderedFindings.length
+          ? renderedFindings.slice(0, 4).map((f) => f.message).join(' · ')
+          : 'TOC anchors resolve; no placeholder links, cut-off headings or instructions',
     },
     {
       key: 'public_integrity',

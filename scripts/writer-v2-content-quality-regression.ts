@@ -335,7 +335,13 @@ test('faq + summary validators repair thin answers / intro echo', () => {
   const answer = Array.isArray(faq?.content)
     ? String((faq!.content[0] as { a: string }).a)
     : '';
-  assert.ok(/should|next|confirm|decide|check/i.test(answer), 'FAQ needs advice');
+  // Thin answers are reported, not padded with the same generic sentence on every
+  // FAQ (Article #117 defect: repeated "Next step: write down one decision…").
+  assert.ok(!/Next step: write down one decision/i.test(answer), 'no generic FAQ boilerplate appended');
+  assert.ok(
+    result.validators.some((v) => v.findings.some((f) => /faq_index_only|faq_no_advice/.test(f.code))),
+    'thin FAQ answer is reported'
+  );
   const summary = String(result.draft.blocks.find((b) => b.type === 'summary')?.content || '');
   assert.ok(similarityScore(intro, summary) < 0.7, 'summary must not mirror intro');
   assert.ok(/next|decide|recap|check|collect/i.test(summary));

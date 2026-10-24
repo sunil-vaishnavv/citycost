@@ -6,7 +6,9 @@
  */
 
 import { runPublicIntegrityGate, formatPublicIntegrityDebug } from './public-integrity-gate.js';
-import { expandArticleWithAi } from './word-expand.js';
+import { expandArticleWithAi, fillThinSectionsWithAi } from './word-expand.js';
+import { findThinSections, THIN_SECTION_WORDS } from './public-content-quality.js';
+import { detectAndRepairRepetition } from './content-quality/repetition-detector.js';
 import type { LinkGeoScope } from './link-relevance.js';
 import type { CalculationLedger } from '../../research/comparison-ledger.js';
 import { groundingRequiredForArticles } from '../../rag/grounding-policy.js';
@@ -20,6 +22,7 @@ import {
 } from '../draft-validate.js';
 import { curatedLinksForWriter } from '../link-validate.js';
 import type { ResearchPack } from '../research-engine.js';
+import { isRealSourcesEnabled } from '../../sources/index.js';
 import {
   ensureDraftIntegrity,
   formatIntegrityMeta,
@@ -34,7 +37,7 @@ import {
 import { buildEditorialPlan } from './editorial-brain.js';
 import { bodyRewriteKeepsContent, humanizeDeterministic, humanizeWithAi } from './humanization.js';
 import { applyGapToSection, detectKnowledgeGaps } from './knowledge-gap/detector.js';
-import { buildFactsDigest, sanitizePromptText } from './prompt-sanitizer.js';
+import { EVIDENCE_RULES, buildFactsDigest, sanitizePromptText } from './prompt-sanitizer.js';
 import { repairPromptLeakage } from './leakage-repair.js';
 import {
   allocateWordBudgets,
@@ -229,18 +232,26 @@ async function writeSection(input: {
     ? memoryDigestForPrompt(mem, 900)
     : '';
 
-  const system = sanitizePromptText(
-    [
-      `You are ${writer.label}: ${writer.voice}`,
-      'Write one article section as JSON.',
-      `Aim for ${input.section.min_words}-${input.section.max_words} words (target near ${(input.section.min_words + input.section.max_words) >> 1}).`,
-      'Return {"blocks":[{"type":"heading","heading":"...","content":"..."},{"type":"paragraph","content":"..."}, ...]}',
-      'No FAQ or Summary here. No prompt/instruction language in prose.',
-      'Internal links: optionally weave 0–2 contextual CityCost paths from the link list using natural anchors (never identical CTA wording).',
-      'Do NOT re-explain facts, indexes, or examples already covered in prior sections — reference briefly at most and add NEW decision value.',
-      uncertainty,
-    ].join('\n')
-  ).text;
+    const citationRule = isRealSourcesEnabled()
+      ? 'CITATION REQUIREMENT: When mentioning real figures, prices, or statistics, cite the verified source inline using markdown links [Source Name](URL) matching the provided SOURCES. If specific factual data is unavailable, state "Insufficient data" rather than inventing numbers.'
+      : '';
+
+    const system = sanitizePromptText(
+      [
+        `You are ${writer.label}: ${writer.voice}`,
+        'Write one article section as JSON.',
+        `Aim for ${input.section.min_words}-${input.section.max_words} words (target near ${(input.section.min_words + input.section.max_words) >> 1}).`,
+        'Return {"blocks":[{"type":"heading","heading":"...","content":"..."},{"type":"paragraph","content":"..."}, ...]}',
+        'No FAQ or Summary here. No prompt/instruction language in prose.',
+        EVIDENCE_RULES,
+        citationRule,
+        'Internal links: optionally weave 0–2 contextual CityCost paths from the link list using natural anchors (never identical CTA wording).',
+        'Do NOT re-explain facts, indexes, or examples already covered in prior sections — reference briefly at most and add NEW decision value.',
+        uncertainty,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    ).text;
 
   const user = sanitizePromptText(
     [
@@ -322,6 +333,8 @@ async function writeFaq(input: {
       `You are ${writer.id} FAQ engine.`,
       writer.voice,
       'Generate 6–8 unique FAQ items as JSON {"blocks":[{"type":"faq","heading":"FAQ","content":[{"q":"...","a":"..."}]}]}',
+      'Each answer must open with a direct answer to its own question, then add specific context. Do not end answers with a shared generic tip or "next step" line.',
+      EVIDENCE_RULES,
       'Direct answers. Do not reuse article sentences. Search-intent focused.',
       input.plan.persona.faq_framing,
     ].join('\n')
@@ -391,6 +404,7 @@ async function writeSummary(input: {
       `You are ${writer.id} Summary engine.`,
       writer.voice,
       'Return JSON {"blocks":[{"type":"summary","heading":"Summary","content":"..."}]}',
+      EVIDENCE_RULES,
       'Summarize and recommend. Do not repeat the introduction. Do not reuse FAQ answers.',
       input.plan.persona.summary_stance,
     ].join('\n')
@@ -476,6 +490,13 @@ export async function runWriterV2(input: {
   };
 
   try {
+    if (isRealSourcesEnabled()) {
+      const sources = input.research.grounding_sources || [];
+      if (!sources.length) {
+        throw new Error('Insufficient data: No verifiable real-world sources available for this topic. Generation stopped to prevent hallucination.');
+      }
+    }
+
     await emit({
       type: 'stage',
       stage: 'editorial_brain',
@@ -559,7 +580,7 @@ export async function runWriterV2(input: {
     assertGuideSpecificWriter(introWriter, plan.guide_id, plan.outline[0] || introSection);
 
     const introSystem = sanitizePromptText(
-      `You are ${introWriter.id}. Write ONLY an intro paragraph JSON {"blocks":[{"type":"intro","content":"..."}]}. Unique, guide-specific, no template clichés. Style=${plan.style.label}. Persona=${plan.persona.label}.`
+      `You are ${introWriter.id}. Write ONLY an intro paragraph JSON {"blocks":[{"type":"intro","content":"..."}]}. Unique, guide-specific, no template clichés. Style=${plan.style.label}. Persona=${plan.persona.label}. ${EVIDENCE_RULES}`
     ).text;
     const introUser = sanitizePromptText(
       `TITLE=${input.topic.title}\nPURPOSE=${plan.purpose}\nFACTS=${factsDigest.slice(0, 3000)}`
@@ -755,6 +776,21 @@ export async function runWriterV2(input: {
     draft = { ...draft, blocks: sanitizeBlocks(draft.blocks) };
     passes.push({ kind: 'sanitize_assembly', meta: structuralPresenceMeta(draft) });
 
+    // Append Sources block if real sources or grounding sources are available
+    const sources = input.research.grounding_sources || [];
+    if (sources.length > 0) {
+      draft.blocks.push({
+        id: 'sources',
+        type: 'list',
+        heading: 'Sources',
+        content: sources.map((s) => `[${s.title}](${s.url || `https://${s.domain}`})`),
+      });
+      passes.push({
+        kind: 'sources',
+        meta: `count=${sources.length}`,
+      });
+    }
+
     // Freeze protected structural blocks BEFORE any rewrite/merge stage
     const protectedSnapshot = snapshotProtected(draft.blocks);
     {
@@ -804,6 +840,7 @@ export async function runWriterV2(input: {
         toc: snap.toc || protectedSnapshot.toc,
         faq: snap.faq || protectedSnapshot.faq,
         summary: snap.summary || protectedSnapshot.summary,
+        sources: snap.sources || protectedSnapshot.sources,
       };
       const { body } = splitProtectedBlocks(draft.blocks);
       const rewriteSystem = sanitizePromptText(
@@ -1263,6 +1300,43 @@ export async function runWriterV2(input: {
       calculation_ledger?: CalculationLedger | null;
       research_status?: string;
     };
+    // Later passes (helpfulness, links, humanize, word floor) run after the Content
+    // Quality engine, so its repetition verdict is stale by now. Repair + re-check
+    // repetition on the current draft; the final decision uses this fresh result.
+    const finalRepetition = detectAndRepairRepetition(draft);
+    draft = finalRepetition.draft;
+    passes.push({
+      kind: 'final_repetition',
+      meta: `status=${finalRepetition.result.status};removed=${finalRepetition.removed};words=${countDraftWords(draft)}`,
+    });
+    const finalRepetitionFailed = finalRepetition.result.status === 'FAIL';
+    const finalCqReasons = [
+      ...cq.report.block_reasons.filter((r) => !r.startsWith('repeated_content:')),
+      ...(finalRepetitionFailed
+        ? finalRepetition.result.findings
+            .filter((f) => f.severity === 'error')
+            .map((f) => `repeated_content:${f.code}`)
+        : []),
+    ];
+    const finalCqBlock = finalCqReasons.length > 0;
+    // Every H2 section needs substantive content — fill thin ones with topic-specific,
+    // facts-grounded text before the final gate (which blocks anything still thin).
+    {
+      const thin = findThinSections(draft);
+      if (thin.length) {
+        const filled = await fillThinSectionsWithAi({
+          draft,
+          thinHeadings: thin.map((t) => t.heading),
+          minSectionWords: THIN_SECTION_WORDS,
+          factsDigest,
+          guideId: plan.guide_id,
+          readerLabel: plan.persona.label,
+          complete,
+        });
+        draft = filled.draft;
+        passes.push({ kind: 'thin_sections_filled', meta: `thin=${thin.map((t) => `${t.heading}:${t.words}`).join('|')};filled=${filled.filled.length}` });
+      }
+    }
     const publicCtx = {
       articleTitle: cleanEditorialTitle(input.topic.title),
       internalLabels: input.internalLabels || [],
@@ -1314,7 +1388,7 @@ export async function runWriterV2(input: {
     if (
       !finalAudit.ok ||
       integrityReport.integrity === 'FAIL' ||
-      cq.block_save ||
+      finalCqBlock ||
       finalHelp.block_save ||
       !linkEngine.report.ok ||
       !linkAfterGates.report.ok ||
@@ -1335,9 +1409,7 @@ export async function runWriterV2(input: {
               ...(!integrityReport.order_valid ? ['Invalid protected block order'] : []),
             ]
           : [];
-      const cqErrors = cq.block_save
-        ? cq.report.block_reasons.map((r) => `content_quality:${r}`)
-        : [];
+      const cqErrors = [...new Set(finalCqReasons)].map((r) => `content_quality:${r}`);
       const helpErrors = finalHelp.block_save
         ? finalHelp.block_reasons.map((r) => `helpfulness:${r}`)
         : [];

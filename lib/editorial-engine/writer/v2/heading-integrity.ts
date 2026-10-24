@@ -77,12 +77,97 @@ export function stripTitleSuffix(heading: string, title: string): string {
   if (!nh.endsWith(nt) || nh === nt) return heading;
   const idx = heading.toLowerCase().lastIndexOf(t.toLowerCase().slice(0, Math.min(12, t.length)));
   if (idx <= 0) return heading;
-  const head = heading.slice(0, idx).replace(/\s*(?:[:|–—-]|\bin\b|\bfor\b)\s*$/i, '').trim();
+  // Drop the title together with whatever introduced it — a separator, "in"/"for",
+  // or an opening bracket ("Housing comparison (Sydney vs Melbourne …)").
+  const head = trimDanglingHeadingTail(heading.slice(0, idx));
   return head.length >= 3 ? head : heading;
 }
 
+/** Remove trailing separators, connectives and unclosed brackets from a heading fragment. */
+export function trimDanglingHeadingTail(text: string): string {
+  let s = text.trim();
+  for (let i = 0; i < 4; i++) {
+    const next = s
+      .replace(/\s*[([{]\s*$/, '')
+      .replace(/\s*(?:[:|–—,;-]|\b(?:in|for|of|and|vs\.?|with|to)\b)\s*$/i, '')
+      .trim();
+    if (next === s) break;
+    s = next;
+  }
+  return s;
+}
+
+/** True when a heading is visibly cut off: dangling bracket/separator or unbalanced brackets. */
+export function isIncompleteHeading(heading: string): boolean {
+  const h = heading.trim();
+  if (!h) return true;
+  if (/[([{:,;–—-]\s*$/.test(h) || /\b(?:and|or|of|the|in|for|vs\.?|with|to)\s*$/i.test(h)) return true;
+  const opens = (h.match(/[([{]/g) || []).length;
+  const closes = (h.match(/[)\]}]/g) || []).length;
+  return opens !== closes;
+}
+
+/**
+ * Repair a cut-off heading: drop an unclosed bracket group and dangling tails.
+ * Returns the original when it cannot be repaired into something meaningful.
+ */
+export function repairIncompleteHeading(heading: string): string {
+  let h = heading.trim();
+  const opens = (h.match(/[([{]/g) || []).length;
+  const closes = (h.match(/[)\]}]/g) || []).length;
+  if (opens > closes) {
+    const lastOpen = Math.max(h.lastIndexOf('('), h.lastIndexOf('['), h.lastIndexOf('{'));
+    if (lastOpen > 0) h = h.slice(0, lastOpen);
+  } else if (closes > opens) {
+    h = h.replace(/[)\]}]/g, '');
+  }
+  h = trimDanglingHeadingTail(h);
+  return h.length >= 3 ? h : heading.trim();
+}
+
+/** Heading level for a heading block (content.level or markdown hashes); default 2. */
+export function headingLevelOf(b: DraftBlock): number {
+  const c = b.content;
+  if (c && typeof c === 'object' && !Array.isArray(c) && 'level' in c) {
+    const level = Number((c as { level?: number }).level);
+    if (level >= 2 && level <= 4) return level;
+  }
+  const raw = typeof c === 'string' ? c : b.heading || '';
+  const hashes = /^(#{2,4})\s/.exec(raw);
+  return hashes ? hashes[1]!.length : 2;
+}
+
+/**
+ * Entries for the table of contents: final H2 section headings in document order,
+ * deduplicated, never the article title. (H3 sub-headings are not listed — the
+ * public page and the SSR renderer apply the same rule.)
+ */
+export function collectTocHeadings(blocks: DraftBlock[], articleTitle = ''): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const titleNorm = normalizeHeading(articleTitle);
+  for (const b of blocks || []) {
+    const t = renderedHeadingText(b);
+    if (!t) continue;
+    if (b.type === 'heading' && headingLevelOf(b) >= 3) continue;
+    const n = normalizeHeading(t);
+    if (!n || seen.has(n) || (titleNorm && n === titleNorm)) continue;
+    seen.add(n);
+    out.push(t);
+  }
+  return out;
+}
+
 export interface HeadingFinding {
-  code: 'empty_heading' | 'duplicate_heading' | 'heading_is_title' | 'toc_entry_missing_heading' | 'heading_missing_from_toc' | 'toc_has_title';
+  code:
+    | 'empty_heading'
+    | 'incomplete_heading'
+    | 'duplicate_heading'
+    | 'heading_is_title'
+    | 'toc_entry_missing_heading'
+    | 'heading_missing_from_toc'
+    | 'toc_has_title'
+    | 'toc_order_mismatch';
   message: string;
   blockId?: string;
 }
@@ -98,14 +183,29 @@ export function repairHeadingsAndToc(
   const fixes: string[] = [];
   let blocks = (draft.blocks || []).map((b) => {
     if (isTocBlockLike(b) || b.type === 'intro') return b;
-    if (b.heading) {
-      const stripped = stripTitleSuffix(b.heading, articleTitle);
-      if (stripped !== b.heading) {
+    let next = b;
+    if (next.heading) {
+      const stripped = stripTitleSuffix(next.heading, articleTitle);
+      if (stripped !== next.heading) {
         fixes.push(`title_suffix_removed:${b.id}`);
-        return { ...b, heading: stripped };
+        next = { ...next, heading: stripped };
+      }
+      if (isIncompleteHeading(next.heading!)) {
+        const repaired = repairIncompleteHeading(next.heading!);
+        if (repaired !== next.heading && !isIncompleteHeading(repaired)) {
+          fixes.push(`incomplete_heading_repaired:${b.id}`);
+          next = { ...next, heading: repaired };
+        }
       }
     }
-    return b;
+    if (next.type === 'heading' && typeof next.content === 'string' && !next.heading && isIncompleteHeading(next.content)) {
+      const repaired = repairIncompleteHeading(next.content);
+      if (repaired !== next.content && !isIncompleteHeading(repaired)) {
+        fixes.push(`incomplete_heading_repaired:${b.id}`);
+        next = { ...next, content: repaired };
+      }
+    }
+    return next;
   });
   blocks = blocks.filter((b) => {
     if (b.type === 'heading' && !renderedHeadingText(b)) {
@@ -127,15 +227,8 @@ export function repairHeadingsAndToc(
     return b;
   });
 
-  const headings = collectRenderedHeadings(blocks);
-  const seen = new Set<string>();
-  const tocEntries: string[] = [];
-  for (const h of headings) {
-    const n = normalizeHeading(h);
-    if (!n || seen.has(n) || n === normalizeHeading(articleTitle)) continue;
-    seen.add(n);
-    tocEntries.push(h);
-  }
+  // TOC is derived from the FINAL heading tree (H2, document order) — never the plan.
+  const tocEntries = collectTocHeadings(blocks, articleTitle);
   blocks = blocks.map((b) => {
     if (b.id !== 'toc') return b;
     const before = Array.isArray(b.content) ? (b.content as unknown[]).map(String) : [];
@@ -157,6 +250,9 @@ export function inspectHeadingsAndToc(draft: WriterDraftPayload, articleTitle: s
     }
     const h = renderedHeadingText(b);
     if (!h) continue;
+    if (isIncompleteHeading(h)) {
+      findings.push({ code: 'incomplete_heading', message: `Incomplete heading: "${h}"`, blockId: b.id });
+    }
     const n = normalizeHeading(h);
     if (titleNorm && n === titleNorm) {
       findings.push({ code: 'heading_is_title', message: `Section heading repeats the title: "${h}"`, blockId: b.id });
@@ -170,21 +266,22 @@ export function inspectHeadingsAndToc(draft: WriterDraftPayload, articleTitle: s
   }
   const toc = blocks.find((b) => b.id === 'toc');
   if (toc && Array.isArray(toc.content)) {
-    const headingSet = new Set(collectRenderedHeadings(blocks).map(normalizeHeading));
-    const tocSet = new Set<string>();
-    for (const entry of toc.content as unknown[]) {
-      const n = normalizeHeading(String(entry));
-      tocSet.add(n);
+    const expected = collectTocHeadings(blocks, articleTitle).map(normalizeHeading);
+    const actual = (toc.content as unknown[]).map((e) => normalizeHeading(String(e)));
+    for (const [i, n] of actual.entries()) {
       if (titleNorm && n.includes(titleNorm)) {
-        findings.push({ code: 'toc_has_title', message: `TOC entry contains the article title: "${entry}"` });
-      } else if (!headingSet.has(n)) {
-        findings.push({ code: 'toc_entry_missing_heading', message: `TOC entry has no matching heading: "${entry}"` });
+        findings.push({ code: 'toc_has_title', message: `TOC entry contains the article title: "${(toc.content as unknown[])[i]}"` });
+      } else if (!expected.includes(n)) {
+        findings.push({ code: 'toc_entry_missing_heading', message: `TOC entry has no matching heading: "${(toc.content as unknown[])[i]}"` });
       }
     }
-    for (const n of headingSet) {
-      if (n && !tocSet.has(n) && n !== titleNorm) {
-        findings.push({ code: 'heading_missing_from_toc', message: `Heading not listed in TOC: "${n}"` });
-      }
+    for (const n of expected) {
+      if (!actual.includes(n)) findings.push({ code: 'heading_missing_from_toc', message: `Heading not listed in TOC: "${n}"` });
+    }
+    const common = actual.filter((n) => expected.includes(n));
+    const expectedOrder = expected.filter((n) => actual.includes(n));
+    if (JSON.stringify(common) !== JSON.stringify(expectedOrder)) {
+      findings.push({ code: 'toc_order_mismatch', message: 'TOC order does not follow the article heading order' });
     }
   }
   return findings;

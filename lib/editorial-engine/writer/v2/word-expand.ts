@@ -10,7 +10,7 @@ import {
   type WriterDraftPayload,
 } from '../draft-validate.js';
 import { mintBlockId } from './block-integrity.js';
-import { sanitizePromptText } from './prompt-sanitizer.js';
+import { EVIDENCE_RULES, sanitizePromptText } from './prompt-sanitizer.js';
 import type { OutlineSection } from './types.js';
 
 function wordsInBlocks(blocks: DraftBlock[]): number {
@@ -57,6 +57,7 @@ export async function expandSectionToMin(input: {
         `Expand this ${input.guideId} section with ${need}+ useful words.`,
         'Add practical advice, cost breakdowns, examples, decision guidance, or common mistakes.',
         'Do NOT invent statistics. Do NOT add FAQ/summary. No filler or repetition.',
+        EVIDENCE_RULES,
         'Return JSON {"blocks":[{"type":"paragraph","content":"..."}, ...]} — only NEW paragraphs to append.',
         `Reader=${input.readerLabel}. Heading=${input.section.heading}.`,
       ].join('\n')
@@ -328,6 +329,7 @@ export async function expandArticleWithAi(input: {
         `Add ${need}+ words of NEW, specific content to the "${target.heading}" section of a ${input.guideId} guide.`,
         'Add practical detail the section does not already cover: a worked example, a cost breakdown, a decision rule, or a common mistake.',
         'Only use numbers from FACTS. Do not repeat existing sentences. No headings, FAQ or summary.',
+        EVIDENCE_RULES,
         'Return JSON {"blocks":[{"type":"paragraph","content":"..."}]} with 1–2 paragraphs.',
         `Reader=${input.readerLabel}.`,
       ].join('\n')
@@ -347,4 +349,57 @@ export async function expandArticleWithAi(input: {
     }
   }
   return { draft: { ...input.draft, blocks }, rounds, added: words - startWords };
+}
+
+/**
+ * Give every thin H2 section substantive, topic-specific content (one AI call per
+ * thin section, facts-grounded). Sections that stay thin are left for the final
+ * gate to block — they are never padded with generic text.
+ */
+export async function fillThinSectionsWithAi(input: {
+  draft: WriterDraftPayload;
+  thinHeadings: string[];
+  minSectionWords: number;
+  factsDigest: string;
+  guideId: string;
+  readerLabel: string;
+  complete: (system: string, user: string) => Promise<string>;
+}): Promise<{ draft: WriterDraftPayload; filled: string[] }> {
+  let blocks = [...(input.draft.blocks || [])];
+  const filled: string[] = [];
+  for (const heading of input.thinHeadings.slice(0, 6)) {
+    const h = blocks.findIndex(
+      (b) => b.type === 'heading' && String(b.heading || (typeof b.content === 'string' ? b.content : '')).trim() === heading
+    );
+    if (h < 0) continue;
+    let end = h + 1;
+    while (end < blocks.length && blocks[end]!.type !== 'heading' && blocks[end]!.type !== 'faq' && blocks[end]!.type !== 'summary') end++;
+    const existing = blocks
+      .slice(h + 1, end)
+      .map((b) => (typeof b.content === 'string' ? b.content : ''))
+      .join('\n');
+    const system = sanitizePromptText(
+      [
+        `Write the body of the "${heading}" section of a ${input.guideId} guide: ${input.minSectionWords + 60}–${input.minSectionWords + 160} words.`,
+        'Cover exactly what the heading promises, with specifics from FACTS (figures, trade-offs, a short example). No generic advice that would fit any section.',
+        'Return JSON {"blocks":[{"type":"paragraph","content":"..."}]} with 2–3 paragraphs. No headings, FAQ or summary.',
+        EVIDENCE_RULES,
+        `Reader=${input.readerLabel}.`,
+      ].join('\n')
+    ).text;
+    const user = sanitizePromptText(`FACTS=${input.factsDigest.slice(0, 3500)}\nCURRENT_SECTION_TEXT:\n${existing.slice(0, 1200) || '(empty)'}`).text;
+    try {
+      const text = await input.complete(system, user);
+      const extra = sanitizeBlocks(parseBlocksFromAi(text))
+        .filter((b) => b.type === 'paragraph' && typeof b.content === 'string' && b.content.trim().length > 60)
+        .slice(0, 3)
+        .map((b) => ({ ...b, id: mintBlockId('fill') }));
+      if (!extra.length) continue;
+      blocks = [...blocks.slice(0, end), ...extra, ...blocks.slice(end)];
+      filled.push(heading);
+    } catch {
+      /* leave it for the gate */
+    }
+  }
+  return { draft: { ...input.draft, blocks }, filled };
 }

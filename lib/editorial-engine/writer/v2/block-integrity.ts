@@ -11,6 +11,7 @@ export const PROTECTED_BLOCK_IDS = {
   toc: 'toc',
   faq: 'faq',
   summary: 'summary',
+  sources: 'sources',
 } as const;
 
 export type ProtectedKind = keyof typeof PROTECTED_BLOCK_IDS;
@@ -20,6 +21,7 @@ export interface ProtectedSnapshot {
   toc?: DraftBlock;
   faq?: DraftBlock;
   summary?: DraftBlock;
+  sources?: DraftBlock;
 }
 
 export interface DraftIntegrityReport {
@@ -108,14 +110,23 @@ export function isTocBlock(b: DraftBlock): boolean {
   return false;
 }
 
+export function isSourcesBlock(b: DraftBlock): boolean {
+  if (b.id === PROTECTED_BLOCK_IDS.sources) return true;
+  const heading = (b.heading || '').toLowerCase().trim();
+  if (heading === 'sources' || heading === 'references' || heading === 'data sources') return true;
+  return false;
+}
+
 export function isProtectedBlock(b: DraftBlock): boolean {
   if (b.type === 'intro' || b.type === 'faq' || b.type === 'summary') return true;
   if (isTocBlock(b)) return true;
+  if (isSourcesBlock(b)) return true;
   if (
     b.id === PROTECTED_BLOCK_IDS.intro ||
     b.id === PROTECTED_BLOCK_IDS.toc ||
     b.id === PROTECTED_BLOCK_IDS.faq ||
-    b.id === PROTECTED_BLOCK_IDS.summary
+    b.id === PROTECTED_BLOCK_IDS.summary ||
+    b.id === PROTECTED_BLOCK_IDS.sources
   ) {
     return true;
   }
@@ -139,6 +150,8 @@ export function snapshotProtected(blocks: DraftBlock[]): ProtectedSnapshot {
       snap.faq = { ...b, id: PROTECTED_BLOCK_IDS.faq, type: 'faq' };
     } else if (b.type === 'summary' && !snap.summary) {
       snap.summary = { ...b, id: PROTECTED_BLOCK_IDS.summary, type: 'summary' };
+    } else if (isSourcesBlock(b) && !snap.sources) {
+      snap.sources = { ...b, id: PROTECTED_BLOCK_IDS.sources };
     }
   }
   return snap;
@@ -174,6 +187,7 @@ export function mergeWithProtected(
   const toc = snap.toc || fallbackSnap?.toc;
   const faq = snap.faq || fallbackSnap?.faq;
   const summary = snap.summary || fallbackSnap?.summary;
+  const sources = snap.sources || fallbackSnap?.sources;
 
   if (intro) {
     out.push(
@@ -205,6 +219,7 @@ export function mergeWithProtected(
       raw.id !== PROTECTED_BLOCK_IDS.toc &&
       raw.id !== PROTECTED_BLOCK_IDS.faq &&
       raw.id !== PROTECTED_BLOCK_IDS.summary &&
+      raw.id !== PROTECTED_BLOCK_IDS.sources &&
       !registry.has(raw.id)
         ? raw.id
         : undefined;
@@ -221,6 +236,14 @@ export function mergeWithProtected(
       registry.insertStrict(
         { ...summary, id: PROTECTED_BLOCK_IDS.summary, type: 'summary' },
         PROTECTED_BLOCK_IDS.summary
+      )
+    );
+  }
+  if (sources) {
+    out.push(
+      registry.insertStrict(
+        { ...sources, id: PROTECTED_BLOCK_IDS.sources },
+        PROTECTED_BLOCK_IDS.sources
       )
     );
   }
@@ -242,7 +265,9 @@ export function uniquifyBlockIds(blocks: DraftBlock[]): DraftBlock[] {
               ? PROTECTED_BLOCK_IDS.summary
               : isTocBlock(b)
                 ? PROTECTED_BLOCK_IDS.toc
-                : b.id;
+                : isSourcesBlock(b)
+                  ? PROTECTED_BLOCK_IDS.sources
+                  : b.id;
       return registry.insert({ ...b, id: stable }, stable);
     }
     const preferred = b.id && !registry.has(b.id) ? b.id : undefined;
@@ -362,12 +387,14 @@ export function ensureDraftIntegrity(
     toc: current.toc || snapshot.toc,
     faq: current.faq || snapshot.faq,
     summary: current.summary || snapshot.summary,
+    sources: current.sources || snapshot.sources,
   };
 
   if (!current.intro && snap.intro) restored.push('intro');
   if (!current.toc && snap.toc) restored.push('toc');
   if (!current.faq && snap.faq) restored.push('faq');
   if (!current.summary && snap.summary) restored.push('summary');
+  if (!current.sources && snap.sources) restored.push('sources');
 
   // Synthesize TOC if still missing but we have headings
   if (!snap.toc && opts?.outlineHeadings?.length) {
@@ -394,6 +421,7 @@ export function ensureDraftIntegrity(
     if (b.type === 'faq') return { ...b, id: PROTECTED_BLOCK_IDS.faq };
     if (b.type === 'summary') return { ...b, id: PROTECTED_BLOCK_IDS.summary };
     if (isTocBlock(b)) return { ...b, id: PROTECTED_BLOCK_IDS.toc };
+    if (isSourcesBlock(b)) return { ...b, id: PROTECTED_BLOCK_IDS.sources };
     return b;
   });
 
@@ -409,7 +437,9 @@ export function ensureDraftIntegrity(
             ? 'summary'
             : isTocBlock(b)
               ? 'toc'
-              : null;
+              : isSourcesBlock(b)
+                ? 'sources'
+                : null;
     if (!kind) return true;
     if (seenKind.has(kind)) return false;
     seenKind.add(kind);

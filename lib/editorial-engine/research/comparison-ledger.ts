@@ -48,6 +48,9 @@ export interface LedgerSide {
   internet: number | null;
   transport_one_way: number | null;
   net_salary: number | null;
+  /** CityCost groceries / restaurant price indices (comparable across cities); null when absent. */
+  groceries_index: number | null;
+  restaurants_index: number | null;
   /** rent + utilities + internet, local currency; null when any input is missing. */
   core_basket: number | null;
   /** net_salary − core_basket, local currency; null when either is missing. */
@@ -82,6 +85,31 @@ export interface CalculationLedger {
   definitions: { basket: string; remainder: string };
   missing: string[];
   data_sources: string[];
+  /**
+   * Which cost categories have comparable evidence for every side. A category
+   * without evidence must not get a "cheaper city" claim in the article.
+   */
+  evidence: Record<LedgerCategory, boolean>;
+}
+
+export type LedgerCategory = 'housing' | 'utilities' | 'internet' | 'transport' | 'salary' | 'groceries' | 'restaurants';
+
+const CATEGORY_FIELD: Record<LedgerCategory, keyof LedgerSide> = {
+  housing: 'rent_1br_centre',
+  utilities: 'utilities_85m2',
+  internet: 'internet',
+  transport: 'transport_one_way',
+  salary: 'net_salary',
+  groceries: 'groceries_index',
+  restaurants: 'restaurants_index',
+};
+
+function evidenceFor(sides: LedgerSide[]): Record<LedgerCategory, boolean> {
+  const out = {} as Record<LedgerCategory, boolean>;
+  for (const [cat, field] of Object.entries(CATEGORY_FIELD) as Array<[LedgerCategory, keyof LedgerSide]>) {
+    out[cat] = sides.length > 0 && sides.every((s) => typeof s[field] === 'number' && (s[field] as number) > 0);
+  }
+  return out;
 }
 
 function usable(n: number | null | undefined): n is number {
@@ -119,6 +147,10 @@ export function resolveLedgerSide(pageSlug: string): LedgerSide | null {
     internet: internet != null ? round(internet) : null,
     transport_one_way: price(ITEM.transport),
     net_salary: salary != null ? round(salary) : null,
+    groceries_index: usable(r.indices?.groceries_index) ? Math.round(r.indices.groceries_index * 10) / 10 : null,
+    restaurants_index: usable(r.indices?.restaurant_price_index)
+      ? Math.round(r.indices.restaurant_price_index * 10) / 10
+      : null,
     core_basket: basket,
     modeled_remainder: basket != null && usable(salary) ? round(salary - basket) : null,
   };
@@ -207,6 +239,7 @@ export function buildCalculationLedger(pageSlugs: string[]): CalculationLedger |
     definitions: { basket: BASKET_DEFINITION, remainder: REMAINDER_DEFINITION },
     missing,
     data_sources: [...new Set(sides.map((s) => s.data_source))],
+    evidence: evidenceFor(sides),
   };
 }
 
@@ -217,10 +250,11 @@ function money(symbol: string, n: number): string {
 /** Canonical lines handed to the writer. Values are final — prose must not recompute them. */
 export function ledgerFactLines(ledger: CalculationLedger | null | undefined): string[] {
   if (!ledger || ledger.status === 'unavailable') return [];
+  // Facts only. Writing rules (quote exactly, respect data gaps) live in the writer's
+  // SYSTEM prompt — directives placed here were copied into published prose.
   const lines: string[] = [
-    `CityCost figures below are final: quote them as given and do not compute other differences.`,
-    `Definition — ${ledger.definitions.basket}.`,
-    `Definition — ${ledger.definitions.remainder}.`,
+    `Core monthly basket (CityCost definition): ${ledger.definitions.basket.replace(/^core monthly basket = /, '')}.`,
+    `Modeled remainder (CityCost definition): ${ledger.definitions.remainder.replace(/^modeled remainder = /, '')}.`,
   ];
   for (const s of ledger.sides) {
     const parts = [
@@ -251,6 +285,21 @@ export function ledgerFactLines(ledger: CalculationLedger | null | undefined): s
       }.`
     );
   }
-  for (const m of ledger.missing) lines.push(`No figure available: ${m} — do not state one.`);
+  if (ledger.kind === 'comparison' && ledger.sides.length === 2) {
+    const [a, b] = ledger.sides as [LedgerSide, LedgerSide];
+    if (ledger.evidence.groceries) {
+      lines.push(`Groceries price index (CityCost, lower = cheaper): ${a.city} ${a.groceries_index}, ${b.city} ${b.groceries_index}.`);
+    }
+    if (ledger.evidence.restaurants) {
+      lines.push(`Restaurant price index (CityCost, lower = cheaper): ${a.city} ${a.restaurants_index}, ${b.city} ${b.restaurants_index}.`);
+    }
+    if (ledger.evidence.transport && ledger.same_currency) {
+      lines.push(`Local transport one-way ticket: ${a.city} ${money(a.symbol, a.transport_one_way!)}, ${b.city} ${money(b.symbol, b.transport_one_way!)}.`);
+    }
+    for (const cat of ['groceries', 'transport', 'restaurants', 'utilities', 'salary'] as LedgerCategory[]) {
+      if (!ledger.evidence[cat]) lines.push(`Data gap: no comparable ${cat} figures for both cities.`);
+    }
+  }
+  for (const m of ledger.missing) lines.push(`Data gap: ${m}.`);
   return lines;
 }

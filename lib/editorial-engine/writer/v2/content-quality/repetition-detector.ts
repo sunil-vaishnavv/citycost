@@ -209,7 +209,25 @@ export function detectAndRepairRepetition(draft: WriterDraftPayload): {
   }
 
   // Drop emptied duplicate paragraphs
-  const compacted = blocks.filter((b) => !(b.type === 'paragraph' && typeof b.content === 'string' && !b.content.trim()));
+  let compacted = blocks.filter((b) => !(b.type === 'paragraph' && typeof b.content === 'string' && !b.content.trim()));
+  // Far-apart duplicates (beyond the 12-block window above): keep the first, drop later
+  // copies — otherwise they survive as "residual duplicates" and block the save.
+  {
+    const kept: string[] = [];
+    const dropIds = new Set<string>();
+    for (const b of compacted) {
+      if (isProtectedBlock(b) || typeof b.content !== 'string' || b.content.trim().length <= 40) continue;
+      const text = String(b.content);
+      if (kept.some((k) => similarityScore(text, k) >= PARAGRAPH_SIM_THRESHOLD)) {
+        dropIds.add(b.id);
+        removed += 1;
+        findings.push({ code: 'duplicate_paragraph', message: 'Removed far-apart duplicated paragraph', severity: 'warn', location: b.id });
+      } else {
+        kept.push(text);
+      }
+    }
+    if (dropIds.size) compacted = compacted.filter((b) => !dropIds.has(b.id));
+  }
   const nextDraft = { ...draft, blocks: compacted };
 
   // FAQ / summary / tip link-anchor repetition (body-aware; still scan protected for findings only)

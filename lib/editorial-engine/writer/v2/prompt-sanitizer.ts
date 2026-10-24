@@ -5,8 +5,18 @@
 
 import type { ResearchPack } from '../research-engine.js';
 import { ledgerFactLines, type CalculationLedger } from '../../research/comparison-ledger.js';
+import { isRealSourcesEnabled } from '../../sources/index.js';
 
 /** Phrases that must never appear in prompts sent to the model. */
+/**
+ * Evidence rules for every writer SYSTEM prompt. Kept out of the FACTS block on
+ * purpose: rule sentences placed among facts were copied into published prose.
+ */
+export const EVIDENCE_RULES =
+  'Evidence rules: quote CityCost figures exactly as they appear in FACTS and never compute new differences or totals. ' +
+  'Where FACTS reports a data gap for a category, say the comparison is not available and do not name a cheaper or better city for it. ' +
+  'Never claim an overall winner beyond what the figures show. Never copy labels, notes or instructions from FACTS into the article.';
+
 export const PROMPT_PLANNING_BANS: Array<{ re: RegExp; repl: string }> = [
   { re: /\bindexed averages\b/gi, repl: 'cost indices' },
   { re: /\bindexed signals?\b/gi, repl: 'cost figures' },
@@ -174,11 +184,19 @@ export function buildFactsDigest(facts: unknown): string {
       }
     }
 
-    const sources = pack.grounding_sources as Array<{ id: number; title: string; domain: string }> | undefined;
+    const sources = pack.grounding_sources as Array<{ id: number; title: string; url?: string; domain: string }> | undefined;
     if (Array.isArray(sources) && sources.length > 0) {
-      lines.push('Grounding Sources (cite figures using inline [^1], [^2] footnotes):');
-      for (const s of sources.slice(0, 8)) {
-        lines.push(`[^${s.id}] ${s.title} (${s.domain})`);
+      if (isRealSourcesEnabled()) {
+        lines.push('VERIFIED REAL-WORLD SOURCES (cite figures using inline [Source Name](URL) markdown links):');
+        for (const s of sources.slice(0, 8)) {
+          const targetUrl = s.url || `https://${s.domain}`;
+          lines.push(`- [${s.title}](${targetUrl})`);
+        }
+      } else {
+        lines.push('Grounding Sources (cite figures using inline [^1], [^2] footnotes):');
+        for (const s of sources.slice(0, 8)) {
+          lines.push(`[^${s.id}] ${s.title} (${s.domain})`);
+        }
       }
     }
   }

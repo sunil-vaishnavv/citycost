@@ -139,8 +139,29 @@ function auditSingleClaim(
     ? 'salary'
     : 'general';
 
-  // Footnote(s) in the claim restrict evidence to the cited source(s).
+  // Footnote(s) or inline markdown link(s) in the claim restrict evidence to the cited source(s).
   const citedIds = [...claimText.matchAll(/\[\^(\d+)\]/g)].map((m) => parseInt(m[1], 10));
+
+  const markdownLinks = [...claimText.matchAll(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g)].map((m) => ({
+    title: m[1].trim().toLowerCase(),
+    url: m[2].trim().toLowerCase(),
+  }));
+
+  for (const link of markdownLinks) {
+    const matched = sources.find((s) => {
+      const sUrl = (s.url || '').toLowerCase();
+      const sDomain = (s.domain || '').toLowerCase();
+      const sTitle = (s.title || '').toLowerCase();
+      return (
+        (link.url && (sUrl.includes(link.url) || link.url.includes(sUrl) || (sDomain && link.url.includes(sDomain)))) ||
+        (link.title && (sTitle.includes(link.title) || link.title.includes(sTitle)))
+      );
+    });
+    if (matched && !citedIds.includes(matched.id)) {
+      citedIds.push(matched.id);
+    }
+  }
+
   const unknownCited = citedIds.filter((id) => !sources.some((s) => s.id === id));
   if (citedIds.length && unknownCited.length === citedIds.length) {
     return {
